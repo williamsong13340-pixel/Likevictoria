@@ -4,10 +4,12 @@
 //   model: gpt-image-2.6-sunburst
 //   size: 1536x1024
 //   quality: high
+//   input: wireframe.png      (optional: restyle this image instead of generating from scratch)
 //   ---
 //   <prompt text>
 //
 // Usage: pnpm art --prompt-file <prompt.md> --out <image.webp>
+// An `input` path is relative to the prompt file.
 // Paths are relative to the directory pnpm was started from. Generation has no seed: the prompt
 // file reproduces the request, not the exact pixels.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -62,18 +64,27 @@ const model = setting('model');
 const size = setting('size');
 const quality = setting('quality');
 
-const response = await fetch('https://api.openai.com/v1/images/generations', {
-  method: 'POST',
-  headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    model,
-    prompt: prompt.trim(),
-    size,
-    quality,
-    output_format: format,
-    n: 1,
-  }),
-});
+const request = { model, prompt: prompt.trim(), size, quality, output_format: format, n: '1' };
+const input = declared.get('input');
+let response: Response;
+if (input === undefined) {
+  response = await fetch('https://api.openai.com/v1/images/generations', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...request, n: 1 }),
+  });
+} else {
+  // Editing starts from the input image, so geography and layout stay close to it.
+  const form = new FormData();
+  for (const [key, value] of Object.entries(request)) form.append(key, value);
+  const inputPath = resolve(dirname(resolve(base, promptFile)), input);
+  form.append('image', new Blob([await readFile(inputPath)], { type: 'image/png' }), input);
+  response = await fetch('https://api.openai.com/v1/images/edits', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: form,
+  });
+}
 if (!response.ok) {
   throw new Error(`OpenAI API ${String(response.status)}: ${await response.text()}`);
 }
