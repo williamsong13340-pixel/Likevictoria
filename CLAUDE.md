@@ -10,24 +10,24 @@
 
 - `pnpm install`
 - `pnpm check`：提交前必须通过。依次运行类型检查、ESLint、Prettier、Knip（普通模式与生产模式）、自研静态分析（`tools/analysis`）、测试。
-- `pnpm macro`、`pnpm macro <场景>`、`pnpm macro --params`：宏观沙盒。
+- `pnpm macro`、`pnpm macro <场景>`、`pnpm macro --params`：宏观沙盒；`--set 参数=值` 可以临时覆盖参数，调参不用改代码。
 - `pnpm art --prompt-file <提示词.md> --out <图片.webp>`：出图。
 
 ## 原则
 
 1. **不写没有用的东西。** 每个导出、字段、参数、数据条目都必须在生产代码中被使用（静态分析会强制检查）。不要预先搭建"以后可能用到"的接口、类型或配置。
-2. **模拟内核必须确定性。** `packages/sim` 中不用 `Math.random`、`Date`、`performance.now`（ESLint 会拦截）。
-3. **经济模型遵循 `docs/04-economic-model.md` 的取舍。** 微观层负责实物与相对价格，宏观块负责名义变量与周期；每个参数要有含义、单位、取值范围；调整速度用半衰期表达；可能发散的响应必须有界；声称的每条经济规律都要有自动测试。
+2. **模拟内核必须确定性。** `packages/sim` 中不用 `Math.random`、`Date`、`performance`、`crypto`、`process`、`globalThis`（ESLint 会拦截）。
+3. **经济模型遵循 `docs/04-economic-model.md` 的取舍。** 微观层负责实物与相对价格，宏观块负责名义变量与周期；每个参数要有含义、单位、取值范围，而且整个范围都必须数值安全（属性测试会在全部范围内随机抽样、跑满百年）；调整速度用半衰期表达；可能发散的响应必须有界；声称的每条经济规律都要有一个对照测试，而且去掉对应机制后测试必须失败。
 4. **内容数据驱动。** 新增商品、法律只改数据文件，不改代码；模拟代码不硬编码内容 ID（见 `docs/05-content-catalog.md`）。
 5. **每个数值都要能解释。** 机制要能给出因果分解，这是界面的基础。
 
 ## 审查
 
-较大的改动在提交前交给 `adversarial-reviewer` 子代理做对抗性审查，处理它确认的问题后再提交。
+较大的改动在提交前交给 `adversarial-reviewer` 子代理做对抗性审查（Opus，max effort，定义在 `.claude/agents/`），处理它确认的问题后再提交。
 
 ## 美术与出图
 
-- 使用 OpenAI 的 `gpt-image-2.6-sunburst`（`pnpm art`）；提示词文件与图片放在一起，保证可复现。`art/style-samples/` 里最早的三张样图是用 2.5 版生成的。
+- 新图使用 OpenAI 的 `gpt-image-2.6-sunburst`（`pnpm art`）。提示词文件开头写明模型、尺寸、质量，与图片放在一起；生成没有种子，所以复现的是同样的请求，而不是同样的像素。`art/style-samples/` 里最早的三张样图是用 2.5 版生成的，进仓库前重新压缩过。
 - 省着用。批量出图之前，必须先让用户确认风格。
 - 生成图只作风格参考：其中的地图边界和界面文字不能当作素材。需要中文文字时，在提示词中明确写"简体中文"。
 

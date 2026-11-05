@@ -1,3 +1,8 @@
+---
+model: gpt-image-2.5-sunburst
+size: 1536x1024
+quality: high
+---
 Concept art for the main screen of a premium PC grand-strategy economic simulation game set in 1962 (a postwar world-economy game; there are no military units anywhere). Widescreen composition.
 
 Center: a gorgeous world map in a refined modern-atlas style: soft shaded-relief mountains, muted hypsometric land tints, layered deep ocean blues with subtle bathymetry, crisp thin coastlines and borders, countries washed with translucent pastel political colors, elegant curved serif country labels, small city dots.

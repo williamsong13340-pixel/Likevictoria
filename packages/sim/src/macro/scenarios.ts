@@ -1,29 +1,34 @@
-import type { MacroPolicy, MacroState } from './model.ts';
+import type { MacroPolicy, MacroStart } from './model.ts';
 import type { MacroScenario } from './sandbox.ts';
 
-const STEADY_STATE: MacroState = {
+// Exchange-rate flexibility and capital mobility as the corresponding laws will set them.
+const FLOAT = 1;
+const MANAGED = 0.5;
+const PEG = 0;
+const OPEN = 8;
+const PARTIAL = 2;
+const CLOSED = 0.2;
+
+const INDEPENDENT_CB = { independentCentralBank: true, baseCredibility: 0.8 };
+const GOVERNMENT_CB = { independentCentralBank: false, baseCredibility: 0.3 };
+
+const STEADY_START: MacroStart = {
   inflation: 0.03,
-  adaptiveExpectation: 0.03,
   credibility: 0.8,
-  policyRate: 0.05,
-  logExchangeRate: 0,
-  realExchangeRate: 0,
-  lastRealDepreciation: 0,
   reserves: 6,
-  debt: 0.5,
-  foreignCurrencyDebtShare: 0,
-  effectiveDebtRate: 0.06,
-  priceLevel: 1,
+  domesticDebt: 0.5,
+  foreignDebt: 0,
 };
 
-const INDEPENDENT_FLOAT: MacroPolicy = {
-  exchangeRegime: 'float',
-  capitalAccount: 'open',
-  independentCentralBank: true,
+const BASE_POLICY: MacroPolicy = {
+  exchangeRateFlexibility: FLOAT,
+  capitalMobility: OPEN,
+  ...INDEPENDENT_CB,
   inflationTarget: 0.03,
   governmentRate: 0.05,
   primaryBalance: 0,
   monetizedShare: 0,
+  foreignBorrowingShare: 0,
 };
 
 const BASELINE: MacroScenario = {
@@ -31,9 +36,9 @@ const BASELINE: MacroScenario = {
   title: '稳态',
   lesson: '没有冲击时，通胀停在目标、产出缺口为零、债务率稳定：模型自身不会漂移。',
   months: 120,
-  initial: STEADY_STATE,
+  start: STEADY_START,
   initialOutputGap: 0,
-  policy: INDEPENDENT_FLOAT,
+  policy: BASE_POLICY,
   policyChanges: [],
   shocks: [],
   anchorRate: 0.05,
@@ -46,12 +51,14 @@ const BASELINE: MacroScenario = {
 
 const OIL_SHOCK = [{ fromMonth: 0, untilMonth: 12, costPush: 0.08 }];
 
-const PEG_BELOW_ANCHOR: MacroPolicy = {
-  ...INDEPENDENT_FLOAT,
-  exchangeRegime: 'peg',
-  independentCentralBank: false,
+const RATE_CUT_UNDER_PEG: MacroPolicy = {
+  ...BASE_POLICY,
+  ...GOVERNMENT_CB,
+  exchangeRateFlexibility: PEG,
   governmentRate: 0.02,
+  foreignBorrowingShare: 0.4,
 };
+const MISMATCHED_DEBT: MacroStart = { ...STEADY_START, domesticDebt: 0.3, foreignDebt: 0.2 };
 
 export const MACRO_SCENARIOS: readonly MacroScenario[] = [
   BASELINE,
@@ -60,9 +67,9 @@ export const MACRO_SCENARIOS: readonly MacroScenario[] = [
     id: 'demand-boom',
     title: '财政扩张',
     lesson:
-      '基本赤字占 GDP 5%、持续 3 年：产出缺口转正，通胀升破目标，央行加息（菲利普斯曲线、泰勒规则）；扩张结束后回落。',
+      '基本赤字占 GDP 5%、持续 3 年：产出缺口转正，通胀升破目标，央行加息（菲利普斯曲线、泰勒规则），经常账户转为赤字（双赤字）；扩张结束后回落。',
     months: 96,
-    policy: { ...INDEPENDENT_FLOAT, primaryBalance: -0.05 },
+    policy: { ...BASE_POLICY, primaryBalance: -0.05 },
     policyChanges: [{ month: 36, policy: { primaryBalance: 0 } }],
   },
   {
@@ -78,10 +85,10 @@ export const MACRO_SCENARIOS: readonly MacroScenario[] = [
     id: 'oil-shock-unanchored',
     title: '石油冲击：预期失锚',
     lesson:
-      '同样的冲击，但政府控制央行、利率不动：预期随通胀上升，实际利率转负，八年后通胀仍在 9%—10% 并缓慢加速（预期失锚、违反泰勒原则）。',
+      '同样的冲击，但央行信誉低、政府把利率固定不动：预期随通胀上升，实际利率转负，通胀长期停在高位（预期失锚、违反泰勒原则）。',
     months: 96,
-    initial: { ...STEADY_STATE, credibility: 0.3 },
-    policy: { ...INDEPENDENT_FLOAT, independentCentralBank: false },
+    start: { ...STEADY_START, credibility: 0.3 },
+    policy: { ...BASE_POLICY, ...GOVERNMENT_CB },
     shocks: OIL_SHOCK,
   },
   {
@@ -89,73 +96,81 @@ export const MACRO_SCENARIOS: readonly MacroScenario[] = [
     id: 'disinflation',
     title: '反通胀',
     lesson:
-      '高通胀下改为独立央行：大幅加息、实际利率转正，先经历衰退，通胀随后下降，信誉逐步重建（反通胀的代价）。',
+      '高通胀下改为独立央行：利率升到约 20%，本币大幅升值，通胀先因进口变便宜而回落；经济随后陷入衰退；汇率回落时通胀一度反弹，靠多年的高实际利率和缓慢重建的信誉，约 8 年后才回到目标（信誉低时反通胀代价大）。',
     months: 120,
-    initial: {
-      ...STEADY_STATE,
-      inflation: 0.12,
-      adaptiveExpectation: 0.12,
-      credibility: 0.05,
-      policyRate: 0.1,
-      effectiveDebtRate: 0.1,
-    },
-    policy: { ...INDEPENDENT_FLOAT, independentCentralBank: false, governmentRate: 0.1 },
-    policyChanges: [{ month: 12, policy: { independentCentralBank: true } }],
+    start: { ...STEADY_START, inflation: 0.12, credibility: 0.05 },
+    policy: { ...BASE_POLICY, ...GOVERNMENT_CB, governmentRate: 0.1 },
+    policyChanges: [{ month: 12, policy: INDEPENDENT_CB }],
   },
   {
     ...BASELINE,
     id: 'fiscal-dominance',
     title: '财政主导：温和印钞',
     lesson:
-      '央行被迫为约 1.5% GDP 的赤字印钞：即使大幅加息，通胀仍停在 10%—15%，加息只换来衰退（财政主导、货币数量论）；高通胀同时把政府债务稀释掉（通胀税）。',
+      '央行被迫为约 1.5% GDP 的赤字印钞：即使利率加到 20% 以上，通胀仍停在 12%—16%，加息只换来衰退（财政主导、货币数量论）；高通胀同时把本币债务稀释掉（通胀税）。',
     months: 180,
-    initial: { ...STEADY_STATE, debt: 0.1 },
-    policy: { ...INDEPENDENT_FLOAT, primaryBalance: -0.01, monetizedShare: 1 },
+    start: { ...STEADY_START, domesticDebt: 0.1 },
+    policy: { ...BASE_POLICY, primaryBalance: -0.01, monetizedShare: 1 },
   },
   {
     ...BASELINE,
     id: 'hyperinflation',
     title: '恶性通胀',
     lesson:
-      '为 6% GDP 的赤字全额印钞并压低利率：超过铸币税上限后，通胀自我加速，信誉崩溃（恶性通胀）。',
+      '为 6% GDP 的赤字全额印钞并压低利率：超过铸币税上限后通胀自我加速，第 3 年超过 1000%，信誉崩溃，经济最终陷入深度衰退；本币债务被稀释殆尽，外币债务却越滚越大。',
     months: 60,
-    initial: { ...STEADY_STATE, debt: 0.2, credibility: 0.3 },
-    policy: {
-      ...INDEPENDENT_FLOAT,
-      independentCentralBank: false,
-      primaryBalance: -0.06,
-      monetizedShare: 1,
-    },
+    start: { ...STEADY_START, credibility: 0.3, domesticDebt: 0.2, foreignDebt: 0.1 },
+    policy: { ...BASE_POLICY, ...GOVERNMENT_CB, primaryBalance: -0.06, monetizedShare: 1 },
   },
   {
     ...BASELINE,
     id: 'peg-open-capital',
     title: '钉住汇率 + 资本开放 + 自主降息',
     lesson:
-      '钉住汇率时把利率压到锚货币以下 3 个百分点：资本外流耗尽储备，钉住崩溃、一次性大幅贬值，外币债务随之膨胀（不可能三角、货币错配）。',
+      '钉住汇率时把利率压到锚货币以下 3 个百分点：资本外流在一年内耗尽储备，钉住崩溃、一次性大幅贬值，外币债务随之膨胀（不可能三角、货币错配）。',
     months: 60,
-    initial: { ...STEADY_STATE, foreignCurrencyDebtShare: 0.4 },
-    policy: PEG_BELOW_ANCHOR,
+    start: MISMATCHED_DEBT,
+    policy: { ...RATE_CUT_UNDER_PEG, capitalMobility: OPEN },
   },
   {
     ...BASELINE,
     id: 'peg-closed-capital',
     title: '钉住汇率 + 资本管制 + 自主降息',
     lesson:
-      '同样的降息，但资本账户关闭：外流很小，钉住可以维持很多年（资本管制换来货币政策自主）。',
+      '同样的降息，但资本账户关闭：外流很小，储备只是缓慢下降，钉住可以维持多年（资本管制换来货币政策自主）；不过本国通胀高于锚货币，实际升值会慢慢侵蚀经常账户。',
     months: 60,
-    initial: { ...STEADY_STATE, foreignCurrencyDebtShare: 0.4 },
-    policy: { ...PEG_BELOW_ANCHOR, capitalAccount: 'closed' },
+    start: MISMATCHED_DEBT,
+    policy: { ...RATE_CUT_UNDER_PEG, capitalMobility: CLOSED },
+  },
+  {
+    ...BASELINE,
+    id: 'managed-partial',
+    title: '有管理浮动 + 部分开放 + 自主降息',
+    lesson:
+      '同样的降息，但汇率有管理地浮动、资本部分开放：压力由汇率和储备分担，本币逐步贬值、储备温和下降，不会突然崩溃（不可能三角的中间状态）。',
+    months: 60,
+    start: MISMATCHED_DEBT,
+    policy: { ...RATE_CUT_UNDER_PEG, exchangeRateFlexibility: MANAGED, capitalMobility: PARTIAL },
+  },
+  {
+    ...BASELINE,
+    id: 'peg-defended',
+    title: '钉住汇率 + 资本开放 + 独立央行：遇上衰退',
+    lesson:
+      '钉住汇率、资本开放、央行独立：遇到衰退时，利率只能跟着锚货币利率走，几乎不能降息，衰退只能靠时间消化（不可能三角的另一面：放弃货币政策自主）。',
+    months: 72,
+    policy: { ...BASE_POLICY, exchangeRateFlexibility: PEG },
+    shocks: [{ fromMonth: 0, untilMonth: 24, demandShock: -0.04 }],
   },
   {
     ...BASELINE,
     id: 'debt-spiral',
     title: '债务螺旋',
     lesson:
-      '高债务 + 基本赤字 + 政治风险：风险溢价随债务凸性上升，资本外流使本币贬值、外币债务膨胀，利息负担推高赤字，债务率加速上升。',
-    months: 120,
-    initial: { ...STEADY_STATE, debt: 1.0, foreignCurrencyDebtShare: 0.3 },
-    policy: { ...INDEPENDENT_FLOAT, primaryBalance: -0.03 },
+      '高债务 + 基本赤字 + 政治风险：风险溢价随债务上升，私人借贷成本跟着上升，经济转入衰退；资本外流使本币贬值、外币债务膨胀，债务率加速上升，最终违约减记；赤字不改，债务会再次累积（连续违约）。',
+    months: 180,
+    start: { ...STEADY_START, domesticDebt: 0.7, foreignDebt: 0.3 },
+    policy: { ...BASE_POLICY, primaryBalance: -0.03, foreignBorrowingShare: 0.3 },
     politicalRiskPremium: 0.02,
   },
 ];

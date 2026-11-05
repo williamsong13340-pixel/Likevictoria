@@ -12,8 +12,10 @@ export interface DemandProxyParams {
   readonly realRateSensitivity: number;
   readonly fiscalMultiplier: number;
   readonly supplyShockOutputLoss: number;
+  readonly inflationOutputCost: number;
   readonly importPropensity: number;
   readonly tradeElasticity: number;
+  readonly maxCurrentAccount: number;
 }
 
 export const DEFAULT_DEMAND_PROXY_PARAMS: DemandProxyParams = {
@@ -22,8 +24,10 @@ export const DEFAULT_DEMAND_PROXY_PARAMS: DemandProxyParams = {
   realRateSensitivity: 0.5,
   fiscalMultiplier: 0.8,
   supplyShockOutputLoss: 0.3,
+  inflationOutputCost: 0.05,
   importPropensity: 0.3,
   tradeElasticity: 0.2,
+  maxCurrentAccount: 0.15,
 };
 
 export const DEMAND_PROXY_PARAM_SPECS: ParamSpecs<DemandProxyParams> = {
@@ -37,13 +41,14 @@ export const DEMAND_PROXY_PARAM_SPECS: ParamSpecs<DemandProxyParams> = {
     unit: 'GDP比例',
     min: 0.02,
     max: 0.5,
-    meaning: '产出偏离潜在水平的饱和上限：产能有限，再负的实际利率也不能让经济无限过热',
+    meaning: '产出偏离潜在水平的饱和上限：产能有限，需求再强也不能让经济无限过热',
   },
   realRateSensitivity: {
     unit: '缺口/利率',
     min: 0,
     max: 3,
-    meaning: '实际利率每高于中性利率 1 个百分点，产出缺口下降多少个百分点',
+    meaning:
+      '私人借贷成本（实际利率 + 风险溢价）每高于中性利率 1 个百分点，产出缺口下降多少个百分点',
   },
   fiscalMultiplier: {
     unit: '缺口/(GDP比例)',
@@ -57,6 +62,12 @@ export const DEMAND_PROXY_PARAM_SPECS: ParamSpecs<DemandProxyParams> = {
     max: 2,
     meaning: '成本冲击（如油价）每带来 1 个百分点通胀，产出缺口下降多少个百分点',
   },
+  inflationOutputCost: {
+    unit: '缺口/通胀²',
+    min: 0,
+    max: 1,
+    meaning: '高通胀的产出代价（扭曲价格信号、破坏合同）：缺口下降 系数 × 通胀²',
+  },
   importPropensity: {
     unit: '经常账户/缺口',
     min: 0,
@@ -66,25 +77,52 @@ export const DEMAND_PROXY_PARAM_SPECS: ParamSpecs<DemandProxyParams> = {
   tradeElasticity: {
     unit: '经常账户/实际贬值',
     min: 0,
-    max: 2,
+    max: 0.5,
     meaning: '实际贬值每 1%，经常账户改善多少（占GDP）',
+  },
+  maxCurrentAccount: {
+    unit: 'GDP比例',
+    min: 0.02,
+    max: 0.5,
+    meaning: '经常账户相对基准值的饱和上限',
   },
 };
 
 export interface DemandProxyState {
   readonly outputGap: number;
   readonly currentAccount: number;
+  /** Local response of the current account to the real exchange rate, for the FX solve. */
+  readonly currentAccountSensitivity: number;
 }
 
 export interface DemandProxyDrivers {
   readonly realRate: number;
+  readonly riskPremium: number;
   readonly neutralRealRate: number;
   readonly primaryBalance: number;
   readonly costPush: number;
   readonly demandShock: number;
+  readonly inflation: number;
   /** Log real exchange rate relative to equilibrium; positive means undervalued. */
   readonly realExchangeRate: number;
   readonly baselineCurrentAccount: number;
+}
+
+/** Current account for a given output gap and real exchange rate, with its local slope. */
+export function currentAccountAt(
+  outputGap: number,
+  realExchangeRate: number,
+  baselineCurrentAccount: number,
+  p: DemandProxyParams,
+): DemandProxyState {
+  const pressure = Math.tanh(
+    (-p.importPropensity * outputGap + p.tradeElasticity * realExchangeRate) / p.maxCurrentAccount,
+  );
+  return {
+    outputGap,
+    currentAccount: baselineCurrentAccount + p.maxCurrentAccount * pressure,
+    currentAccountSensitivity: p.tradeElasticity * (1 - pressure * pressure),
+  };
 }
 
 export function stepDemandProxy(
@@ -92,16 +130,14 @@ export function stepDemandProxy(
   d: DemandProxyDrivers,
   p: DemandProxyParams,
 ): DemandProxyState {
-  const demandImpulse =
-    -p.realRateSensitivity * (d.realRate - d.neutralRealRate) -
+  // Private borrowers pay the sovereign risk premium too.
+  const impulse =
+    -p.realRateSensitivity * (d.realRate + d.riskPremium - d.neutralRealRate) -
     p.fiscalMultiplier * d.primaryBalance -
-    p.supplyShockOutputLoss * d.costPush +
+    p.supplyShockOutputLoss * d.costPush -
+    p.inflationOutputCost * d.inflation ** 2 +
     d.demandShock;
-  const gapTarget = p.maxOutputGap * Math.tanh(demandImpulse / p.maxOutputGap);
+  const gapTarget = p.maxOutputGap * Math.tanh(impulse / p.maxOutputGap);
   const outputGap = approach(state.outputGap, gapTarget, p.gapHalfLifeMonths);
-  const currentAccount =
-    d.baselineCurrentAccount -
-    p.importPropensity * outputGap +
-    p.tradeElasticity * d.realExchangeRate;
-  return { outputGap, currentAccount };
+  return currentAccountAt(outputGap, d.realExchangeRate, d.baselineCurrentAccount, p);
 }

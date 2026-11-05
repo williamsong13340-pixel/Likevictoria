@@ -1,3 +1,8 @@
+---
+model: gpt-image-2.5-sunburst
+size: 1536x1024
+quality: high
+---
 Concept art for the main screen of a PC grand-strategy economic simulation game set in 2031 (global economy, demographics and climate; there are no military units anywhere). Widescreen composition.
 
 Center: a dark navy world map rendered as a high-end data visualization: subtle glowing country borders, regions shaded as a heatmap of GDP per capita, luminous arcs showing trade flows between ports, faint city lights, gentle bloom and depth.

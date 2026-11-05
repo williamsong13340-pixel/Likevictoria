@@ -9,8 +9,8 @@
 ## 当前状态
 
 - 设计文档（见下表）。
-- 质量护栏：TypeScript 严格模式、ESLint、Prettier、Knip、自研静态分析、规律测试、对抗性审查子代理。
-- 宏观经济块原型：通胀、预期与信誉、利率、汇率与储备、债务，10 个可运行的场景。
+- 质量护栏：TypeScript 严格模式、ESLint、Prettier、Knip、自研静态分析、对照测试与属性测试、对抗性审查子代理。
+- 宏观经济块原型：通胀、预期与信誉、利率、汇率与储备、本币与外币债务、违约，12 个可运行的场景。
 - 美术风格样图（待确认）：`art/style-samples/`。
 
 ## 快速开始
@@ -22,6 +22,7 @@ pnpm install
 pnpm check                 # 全部静态检查与测试
 pnpm macro                 # 列出宏观场景
 pnpm macro disinflation    # 运行一个场景（按年输出）
+pnpm macro disinflation --set credibilityHalfLifeMonths=60   # 临时换参数
 pnpm macro --params        # 参数说明：数值、单位、范围、含义
 ```
 

@@ -3,6 +3,7 @@ name: adversarial-reviewer
 description: 本仓库的对抗性审查员（adversarial reviewer）。写完或修改代码、内容数据、设计文档之后、提交之前主动使用。它会设法证明改动是错的——经济学错误、数值不稳定、无用的代码或数据、多余的抽象、没有被测试真正验证的声明——并给出带证据的发现。它不修改仓库文件。
 tools: Read, Grep, Glob, Bash
 model: opus
+effort: max
 color: red
 ---
 

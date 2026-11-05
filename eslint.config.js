@@ -24,20 +24,27 @@ export default defineConfig(
     files: ['packages/sim/src/**/*.ts'],
     rules: {
       'no-console': 'error',
+      // Every source of wall-clock time or entropy, however it is reached.
+      'no-restricted-globals': [
+        'error',
+        ...['Date', 'performance', 'crypto', 'process', 'globalThis', 'window', 'self'].map(
+          (name) => ({ name, message: DETERMINISM }),
+        ),
+      ],
       'no-restricted-properties': [
         'error',
         { object: 'Math', property: 'random', message: DETERMINISM },
-        { object: 'Date', property: 'now', message: DETERMINISM },
-        { object: 'performance', property: 'now', message: DETERMINISM },
       ],
       'no-restricted-syntax': [
         'error',
-        { selector: "NewExpression[callee.name='Date']", message: DETERMINISM },
-        {
-          selector: 'Literal[value=/^(good|law|building|pm|tech|need)\\./]',
+        ...[
+          'Literal[value=/^(good|law|building|pm|tech|need)\\./]',
+          'TemplateLiteral > TemplateElement[value.raw=/^(good|law|building|pm|tech|need)\\./]',
+        ].map((selector) => ({
+          selector,
           message:
             '模拟代码不能硬编码内容 ID：通过配方、需求类别或标签访问内容（见 docs/05-content-catalog.md）',
-        },
+        })),
       ],
     },
   },

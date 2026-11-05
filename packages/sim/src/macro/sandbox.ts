@@ -1,12 +1,18 @@
 import { validateParams } from '../params.ts';
 import {
+  currentAccountAt,
   DEFAULT_DEMAND_PROXY_PARAMS,
   DEMAND_PROXY_PARAM_SPECS,
   stepDemandProxy,
   type DemandProxyParams,
-  type DemandProxyState,
 } from './demand-proxy.ts';
-import { stepMacro, type MacroPolicy, type MacroState } from './model.ts';
+import {
+  initialMacroState,
+  stepMacro,
+  type MacroInputs,
+  type MacroPolicy,
+  type MacroStart,
+} from './model.ts';
 import { DEFAULT_MACRO_PARAMS, MACRO_PARAM_SPECS, type MacroParams } from './params.ts';
 
 /** A temporary shock, active for months in [fromMonth, untilMonth). */
@@ -23,13 +29,13 @@ interface ScenarioPolicyChange {
   readonly policy: Partial<MacroPolicy>;
 }
 
-/** One country, one storyline: initial conditions, policy, shocks and fixed structure. */
+/** One country, one storyline: starting conditions, policy, shocks and fixed structure. */
 export interface MacroScenario {
   readonly id: string;
   readonly title: string;
   readonly lesson: string;
   readonly months: number;
-  readonly initial: MacroState;
+  readonly start: MacroStart;
   readonly initialOutputGap: number;
   readonly policy: MacroPolicy;
   readonly policyChanges: readonly ScenarioPolicyChange[];
@@ -53,13 +59,15 @@ export interface MonthRecord {
   readonly currentAccount: number;
   readonly capitalFlow: number;
   readonly reserves: number;
-  readonly exchangeRate: number;
+  readonly logExchangeRate: number;
   readonly debt: number;
+  readonly foreignDebt: number;
   readonly fiscalDeficit: number;
   readonly monetizedDeficit: number;
   readonly riskPremium: number;
-  readonly priceLevel: number;
+  readonly logPriceLevel: number;
   readonly pegCollapsed: boolean;
+  readonly defaulted: boolean;
 }
 
 /** Runs the macro block against the demand stand-in for the whole scenario. */
@@ -71,12 +79,25 @@ export function runScenario(
   validateParams(macroParams, MACRO_PARAM_SPECS);
   validateParams(demandParams, DEMAND_PROXY_PARAM_SPECS);
 
-  let state = scenario.initial;
   let policy = scenario.policy;
-  let demand: DemandProxyState = {
-    outputGap: scenario.initialOutputGap,
-    currentAccount: scenario.baselineCurrentAccount,
-  };
+  let demand = currentAccountAt(
+    scenario.initialOutputGap,
+    0,
+    scenario.baselineCurrentAccount,
+    demandParams,
+  );
+  const inputsFor = (costPush: number): MacroInputs => ({
+    outputGap: demand.outputGap,
+    potentialGrowth: scenario.potentialGrowth,
+    costPush,
+    currentAccount: demand.currentAccount,
+    currentAccountSensitivity: demand.currentAccountSensitivity,
+    importShare: scenario.importShare,
+    politicalRiskPremium: scenario.politicalRiskPremium,
+    anchorRate: scenario.anchorRate,
+    anchorInflation: scenario.anchorInflation,
+  });
+  let state = initialMacroState(scenario.start, policy, inputsFor(0), macroParams);
   const records: MonthRecord[] = [];
 
   for (let month = 0; month < scenario.months; month++) {
@@ -92,23 +113,9 @@ export function runScenario(
       }
     }
 
-    const step = stepMacro(
-      state,
-      policy,
-      {
-        outputGap: demand.outputGap,
-        potentialGrowth: scenario.potentialGrowth,
-        costPush,
-        currentAccount: demand.currentAccount,
-        importShare: scenario.importShare,
-        politicalRiskPremium: scenario.politicalRiskPremium,
-        anchorRate: scenario.anchorRate,
-        anchorInflation: scenario.anchorInflation,
-      },
-      macroParams,
-    );
+    const step = stepMacro(state, policy, inputsFor(costPush), macroParams);
     state = step.state;
-    if (step.pegCollapsed) policy = { ...policy, exchangeRegime: 'float' };
+    if (step.pegCollapsed) policy = { ...policy, exchangeRateFlexibility: 1 };
 
     records.push({
       month,
@@ -121,23 +128,27 @@ export function runScenario(
       currentAccount: demand.currentAccount,
       capitalFlow: step.capitalFlow,
       reserves: state.reserves,
-      exchangeRate: Math.exp(state.logExchangeRate),
-      debt: state.debt,
+      logExchangeRate: state.logExchangeRate,
+      debt: state.domesticDebt + state.foreignDebt,
+      foreignDebt: state.foreignDebt,
       fiscalDeficit: step.fiscalDeficit,
       monetizedDeficit: step.monetizedDeficit,
       riskPremium: step.riskPremium,
-      priceLevel: state.priceLevel,
+      logPriceLevel: state.logPriceLevel,
       pegCollapsed: step.pegCollapsed,
+      defaulted: step.defaulted,
     });
 
     demand = stepDemandProxy(
       demand,
       {
         realRate: step.realRate,
+        riskPremium: step.riskPremium,
         neutralRealRate: macroParams.neutralRealRate,
         primaryBalance: policy.primaryBalance,
         costPush,
         demandShock,
+        inflation: state.inflation,
         realExchangeRate: state.realExchangeRate,
         baselineCurrentAccount: scenario.baselineCurrentAccount,
       },
