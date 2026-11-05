@@ -156,13 +156,38 @@ export async function lifted(a: number): Promise<number> {
   return await syncWork(a);
 }
 
-// An arrow field that calls through `this.service` binds the receiver.
+// Arrow fields that call through `this`, however the chain is written, bind the receiver.
 class Service {
   handle(a: number): number {
     return a + 1;
   }
 }
 export class Panel {
-  private readonly service = new Service();
-  onChange = (a: number): number => this.service.handle(a);
+  private readonly service: Service | undefined = new Service();
+  private readonly services: Service[] = [new Service()];
+  onChange = (a: number): number => this.service!.handle(a);
+  viaCast = (a: number): number => (this.service as Service).handle(a);
+  viaCall = (a: number): number => this.first().handle(a);
+  viaIndex = (a: number): number => this.services[0]!.handle(a);
+  private first(): Service {
+    return this.services[0] ?? new Service();
+  }
+}
+
+// A class expression is held to the same contract as a class declaration.
+export const Drawn = class implements Shape {
+  area(w: number, h: number): number {
+    return add(w, h);
+  }
+};
+
+// Discarding a value that may be a promise is what a callback must do; awaiting an `any` value
+// changes nothing that can be seen.
+function maybeAsync(a: number): Promise<void> | undefined {
+  return a > 0 ? Promise.resolve() : undefined;
+}
+export const onTap = (a: number): void => void maybeAsync(a);
+declare function loose(a: number): any;
+export async function viaAny(a: number): Promise<unknown> {
+  return await loose(a);
 }

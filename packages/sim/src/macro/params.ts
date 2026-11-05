@@ -18,6 +18,7 @@ export interface MacroParams {
   readonly exchangeRatePassThrough: number;
   readonly passThroughHalfLifeMonths: number;
   readonly monetizationInflation: number;
+  readonly financingHalfLifeMonths: number;
   readonly moneyFlightSemiElasticity: number;
   readonly minMoneyDemand: number;
   readonly minInflation: number;
@@ -61,6 +62,7 @@ export const DEFAULT_MACRO_PARAMS: MacroParams = {
   exchangeRatePassThrough: 0.5,
   passThroughHalfLifeMonths: 3,
   monetizationInflation: 6,
+  financingHalfLifeMonths: 6,
   moneyFlightSemiElasticity: 2,
   minMoneyDemand: 0.02,
   minInflation: -0.2,
@@ -102,7 +104,7 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   expectationAttention: {
     unit: '1/通胀',
     min: 0,
-    max: 50,
+    max: 20,
     meaning: '通胀越高，人们越关注物价：记忆中的通胀每高 1.00，预期调整速度提高的倍数',
   },
   minCredibility: {
@@ -149,7 +151,7 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   },
   passThroughHalfLifeMonths: {
     unit: '月',
-    min: 1,
+    min: 2,
     max: 24,
     meaning: '汇率传导的半衰期：进口价格变化需要多久才有一半传到消费物价',
   },
@@ -158,6 +160,13 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
     min: 0,
     max: 30,
     meaning: '货币化赤字每占 GDP 1.00 带来的额外货币增长（约等于基础货币/GDP 的倒数）',
+  },
+  financingHalfLifeMonths: {
+    unit: '月',
+    min: 3,
+    max: 24,
+    meaning:
+      '央行按政府近几个月的平均融资需求印钞：预算按年编制，印钞机不会随每个月的现金流开开关关',
   },
   moneyFlightSemiElasticity: {
     unit: '1/通胀',
@@ -319,7 +328,7 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   },
   marketExclusionMonths: {
     unit: '月',
-    min: 6,
+    min: 12,
     max: 120,
     meaning:
       '违约后无法借款的时长：期间基本赤字只能靠印钞弥补，重组后的债务不再随市场利率重新定价，外国资本不进入，也不会再次违约',

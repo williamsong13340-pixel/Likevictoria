@@ -148,13 +148,28 @@ function unwrap(expression: ts.Expression): ts.Expression {
   return e;
 }
 
-const isThenable = (checker: ts.TypeChecker, node: ts.Node): boolean =>
-  checker.getTypeAtLocation(node).getProperty('then') !== undefined;
+/** Whether a value of this expression's type may be a promise (`any` and unions included). */
+function mayBeThenable(checker: ts.TypeChecker, node: ts.Node): boolean {
+  const type = checker.getTypeAtLocation(node);
+  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+  return (type.isUnion() ? type.types : [type]).some((t) => t.getProperty('then') !== undefined);
+}
 
-/** The object at the start of a chain like `this.service.handle`. */
+/** The object at the start of a chain like `this.service!.handle` or `this.first().handle`. */
 function rootOf(expression: ts.Expression): ts.Expression {
   let e = expression;
-  while (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) e = e.expression;
+  while (
+    ts.isPropertyAccessExpression(e) ||
+    ts.isElementAccessExpression(e) ||
+    ts.isCallExpression(e) ||
+    ts.isParenthesizedExpression(e) ||
+    ts.isAsExpression(e) ||
+    ts.isSatisfiesExpression(e) ||
+    ts.isNonNullExpression(e) ||
+    ts.isTypeAssertionExpression(e)
+  ) {
+    e = e.expression;
+  }
   return e;
 }
 
@@ -175,9 +190,9 @@ function forwardedCallee(fn: ts.SignatureDeclaration, checker: ts.TypeChecker): 
   // Awaiting a promise or discarding a plain value changes nothing; awaiting a plain value turns
   // the result into a promise, and discarding a promise is what a callback must do with one.
   for (;;) {
-    if (ts.isAwaitExpression(call) && isThenable(checker, call.expression)) {
+    if (ts.isAwaitExpression(call) && mayBeThenable(checker, call.expression)) {
       call = unwrap(call.expression);
-    } else if (ts.isVoidExpression(call) && !isThenable(checker, call.expression)) {
+    } else if (ts.isVoidExpression(call) && !mayBeThenable(checker, call.expression)) {
       call = unwrap(call.expression);
     } else {
       break;
@@ -240,13 +255,16 @@ function satisfiesContract(node: ts.Node, checker: ts.TypeChecker): boolean {
   if (member === undefined || !ts.isClassLike(member.parent)) return false;
   const owner = member.parent;
   const isStatic = (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Static) !== 0;
-  // The member's own symbol, found through the class type so that computed names work too.
-  const instanceType = checker.getTypeAtLocation(owner);
-  const classSymbol = instanceType.getSymbol();
-  const ownType =
-    isStatic && classSymbol !== undefined
-      ? checker.getTypeOfSymbolAtLocation(classSymbol, owner)
-      : instanceType;
+  // The member's own symbol, found through the class type so that computed names work too. A
+  // class expression may be anonymous; its constructor type still leads to the class symbol.
+  const classSymbol =
+    owner.name === undefined
+      ? checker.getTypeAtLocation(owner).getSymbol()
+      : checker.getSymbolAtLocation(owner.name);
+  if (classSymbol === undefined) return false;
+  const ownType = isStatic
+    ? checker.getTypeOfSymbolAtLocation(classSymbol, owner)
+    : checker.getDeclaredTypeOfSymbol(classSymbol);
   const own = ownType.getProperties().find((property) => property.declarations?.includes(member));
   if (own === undefined) return false;
   return (owner.heritageClauses ?? []).some(

@@ -19,6 +19,7 @@ describe('macro sandbox: --set overrides', () => {
     ['phillipsSlope=abc', '不是一个数字'],
     ['phillipsSlope=Infinity', '不是一个数字'],
     ['phillipsSlope=5', '超出范围'],
+    ['fiscalMultiplier=5', '超出范围'], // demand stand-in parameters are checked too
   ])('rejects %s', (assignment, message) => {
     expect(() => parametersWith([assignment])).toThrow(message);
   });

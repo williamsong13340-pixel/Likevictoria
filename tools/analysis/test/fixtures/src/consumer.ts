@@ -8,4 +8,7 @@ export const results = [
   shape.area(1, 2),
   new Handlers().bound(1),
   new Panel().onChange(1),
+  new Panel().viaCast(1),
+  new Panel().viaCall(1),
+  new Panel().viaIndex(1),
 ];

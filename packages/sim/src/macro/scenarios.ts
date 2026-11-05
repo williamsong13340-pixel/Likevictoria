@@ -104,7 +104,7 @@ export const MACRO_SCENARIOS: readonly MacroScenario[] = [
     id: 'fiscal-dominance',
     title: '财政主导：温和印钞',
     lesson:
-      '央行被迫为约 1.5% GDP 的赤字印钞：即使利率加到 20% 以上，通胀仍停在 12%—16%，加息只换来衰退（财政主导、货币数量论）；高通胀同时把本币债务稀释掉（通胀税）。',
+      '央行被迫为约 1.5% GDP 的赤字印钞：即使利率加到 20% 以上，通胀仍升到约 15% 并停在那里，加息只换来衰退（财政主导、货币数量论）；高通胀同时把本币债务稀释掉（通胀税）。',
     months: 180,
     start: { ...STEADY_START, domesticDebt: 0.1 },
     policy: { ...BASE_POLICY, primaryBalance: -0.01, monetizedShare: 1 },
@@ -114,7 +114,7 @@ export const MACRO_SCENARIOS: readonly MacroScenario[] = [
     id: 'hyperinflation',
     title: '恶性通胀',
     lesson:
-      '为 6% GDP 的赤字全额印钞并压低利率：超过铸币税上限后通胀自我加速，第 4 年超过 100%，第 5 年超过 1000%，信誉崩溃，经济最终陷入深度衰退；本币债务被稀释殆尽，外币债务却翻了一倍。',
+      '为 6% GDP 的赤字全额印钞并压低利率：超过铸币税上限后通胀自我加速，第 3 年超过 100%，第 4 年失控，信誉崩溃，经济最终陷入深度衰退；本币债务被稀释殆尽，外币债务却从 10% 涨到约 28%。',
     months: 60,
     start: { ...STEADY_START, credibility: 0.3, domesticDebt: 0.2, foreignDebt: 0.1 },
     policy: { ...BASE_POLICY, ...GOVERNMENT_CB, primaryBalance: -0.06, monetizedShare: 1 },
@@ -164,7 +164,7 @@ export const MACRO_SCENARIOS: readonly MacroScenario[] = [
     id: 'debt-spiral',
     title: '债务螺旋',
     lesson:
-      '高债务 + 基本赤字 + 政治风险：风险溢价随债务上升，私人借贷成本跟着上升，经济转入衰退；资本外流使本币贬值、外币债务膨胀，债务率加速上升，第 6 年违约减记。之后三年被市场排斥：基本赤字只能印钞，通胀逐年升到约 17%，信誉大跌；外国资本不再进入，但巨额贸易顺差让超跌的本币明显回升。排斥结束、停止印钞后通胀回落，但赤字不改，债务又一路累积，第 15 年回到 150% 并继续上升。',
+      '高债务 + 基本赤字 + 政治风险：风险溢价随债务上升，私人借贷成本跟着上升，经济转入衰退；资本外流使本币贬值、外币债务膨胀，债务率加速上升，第 6 年违约减记。之后三年被市场排斥：基本赤字只能印钞，通胀逐年升到约 19%，信誉大跌；外国资本不再进入，但巨额贸易顺差让超跌的本币明显回升。排斥结束、停止印钞后通胀回落，但赤字不改，重新借款还要付声誉溢价，债务一路累积，第 14 年再次违约。',
     months: 180,
     start: { ...STEADY_START, domesticDebt: 0.7, foreignDebt: 0.3 },
     policy: { ...BASE_POLICY, primaryBalance: -0.03, foreignBorrowingShare: 0.3 },

@@ -36,6 +36,7 @@ describe('project static analysis', () => {
       'makePoint',
       'run',
       'spread',
+      'viaAny', // awaiting an `any` value may be awaiting a promise
     ]);
   });
 

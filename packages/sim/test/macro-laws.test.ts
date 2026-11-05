@@ -248,12 +248,13 @@ const REGULARITIES: Readonly<Record<string, (m: MacroParams, d: DemandProxyParam
     return costPerPoint(0.05) > costPerPoint(0.6) && costPerPoint(0.6) > costPerPoint(0.8);
   },
   'quantity theory: more printing, a higher but stable plateau': (m, d) => {
-    // A plateau does not climb, and moves less than a fifth of its level in five years.
+    // A plateau neither climbs nor collapses: over five years inflation rises by less than a
+    // point and stays above half the plateau (it settles slowly as the debt is eroded).
     const plateau = (primaryBalance: number): { level: number; stable: boolean } => {
       const r = runScenario(withPolicy(scenario('fiscal-dominance'), { primaryBalance }), m, d);
       const level = mean(r.slice(120, 180).map((x) => x.inflation));
-      const drift = at(r, 179).inflation - at(r, 119).inflation;
-      return { level, stable: drift < 0.01 && Math.abs(drift) < 0.2 * level };
+      const end = at(r, 179).inflation;
+      return { level, stable: end - at(r, 119).inflation < 0.01 && end > 0.5 * level };
     };
     const small = plateau(-0.005);
     const medium = plateau(-0.01);
@@ -266,9 +267,15 @@ const REGULARITIES: Readonly<Record<string, (m: MacroParams, d: DemandProxyParam
   },
   'seigniorage limit: runaway inflation and collapsing credibility': (m, d) => {
     const r = runScenario({ ...scenario('hyperinflation'), months: 120 }, m, d);
-    // Inflation keeps accelerating until it nears its ceiling.
+    // Inflation keeps accelerating until it nears its ceiling: the cap, or the rate at which
+    // money demand has fallen to its floor.
+    const ceiling = (month: number): number =>
+      Math.min(
+        m.maxInflation,
+        (m.monetizationInflation * at(r, month).monetizedDeficit) / m.minMoneyDemand,
+      );
     const accelerates = (from: number, to: number): boolean =>
-      at(r, to).inflation > at(r, from).inflation || at(r, from).inflation > 0.9 * m.maxInflation;
+      at(r, to).inflation > at(r, from).inflation || at(r, from).inflation > 0.9 * ceiling(from);
     return (
       accelerates(23, 47) &&
       accelerates(47, 71) &&
@@ -277,9 +284,26 @@ const REGULARITIES: Readonly<Record<string, (m: MacroParams, d: DemandProxyParam
       at(r, 47).credibility < 0.2
     );
   },
-  'inflation tax falls on domestic debt only': (m, d) => {
+  'stopping the printing ends a hyperinflation': (m, d) => {
     const plan = { ...scenario('hyperinflation'), months: 120 };
-    const end = at(runScenario(plan, m, d), 119);
+    const stop = runScenario(plan, m, d).findIndex((x) => x.inflation > 2); // above ~600% a year
+    if (stop < 0) return false;
+    const reform = { primaryBalance: 0, monetizedShare: 0 };
+    const r = runScenario({ ...plan, policyChanges: [{ month: stop + 1, policy: reform }] }, m, d);
+    // Inflation peaks within three months (money demand recovers with a lag), then falls every
+    // month and loses at least a third within two years.
+    const after = r.slice(stop, stop + 25).map((x) => x.inflation);
+    const peak = Math.max(...after);
+    const peakMonth = after.indexOf(peak);
+    return (
+      peakMonth <= 3 &&
+      after.slice(peakMonth + 1).every((x, k) => x <= (after[peakMonth + k] ?? peak)) &&
+      at(r, stop + 24).inflation < (2 * peak) / 3
+    );
+  },
+  'inflation tax falls on domestic debt only': (m, d) => {
+    const plan = scenario('hyperinflation');
+    const end = at(runScenario(plan, m, d), 59);
     return end.debt - end.foreignDebt < 0.01 && end.foreignDebt > plan.start.foreignDebt;
   },
   'trinity: capital mobility drains a peg': (m, d) => {
@@ -400,6 +424,14 @@ describe('macro block: mechanisms', () => {
     const calm = stepMacro(QUIET_STATE, BASE_POLICY, QUIET_INPUTS, P);
     expect(spike.state.inflation - calm.state.inflation).toBeGreaterThan(0.05);
     expect(Math.abs(spike.state.policyRate - calm.state.policyRate)).toBeLessThan(0.005);
+    // Nor to last month's realized inflation, when expectations stay put.
+    const hotLastMonth = stepMacro(
+      { ...QUIET_STATE, inflation: 0.15 },
+      BASE_POLICY,
+      QUIET_INPUTS,
+      P,
+    );
+    expect(hotLastMonth.state.policyRate).toBeCloseTo(calm.state.policyRate, 12);
   });
 
   it('expected inflation passes into the policy rate at once; only the stance is smoothed', () => {
@@ -485,21 +517,35 @@ describe('macro block: mechanisms', () => {
     expect(printed.state.credibility).toBeLessThan(borrowed.state.credibility);
   });
 
-  it('people judge printing by its recent average, and money demand has a floor', () => {
-    // Expected inflation of 500% a year: money demand has collapsed to its floor.
-    const flight: MacroState = { ...QUIET_STATE, adaptiveExpectation: 5, expectedInflation: 5 };
+  it('only heavy printing sustains a hyperinflation: money demand has a floor', () => {
+    // Remembered inflation of 500% a year: money demand has fallen to its floor. Money demand
+    // follows remembered inflation, not this month's expectation.
+    const flight: MacroState = { ...QUIET_STATE, adaptiveExpectation: 5, expectedInflation: 0.1 };
     const params = { ...P, monetizationCredibilityPenalty: 0 };
     const government = { ...BASE_POLICY, independentCentralBank: false, primaryBalance: -0.01 };
     const printing = stepMacro(flight, { ...government, monetizedShare: 1 }, QUIET_INPUTS, params);
     const borrowing = stepMacro(flight, { ...government, monetizedShare: 0 }, QUIET_INPUTS, params);
-    const perceived =
-      printing.monetizedDeficit * (1 - 2 ** (-1 / params.expectationHalfLifeMonths));
+    expect(printing.monetizedDeficit).toBeGreaterThan(0.01);
+    // People take in printing as fast as they take in inflation: with high remembered inflation
+    // they pay close attention.
+    const memory = params.expectationHalfLifeMonths / (1 + params.expectationAttention * 5);
+    const perceived = printing.monetizedDeficit * (1 - 2 ** (-1 / memory));
     expect(printing.state.perceivedMonetization).toBeCloseTo(perceived, 12);
     expect(printing.state.expectedInflation - borrowing.state.expectedInflation).toBeCloseTo(
       (printing.state.credibility * params.monetizationInflation * perceived) /
         params.minMoneyDemand,
       9,
     );
+  });
+
+  it("the central bank finances the government's average need, not one month's cash flow", () => {
+    const printer = { ...BASE_POLICY, primaryBalance: -0.02, monetizedShare: 1 };
+    const steady = { ...QUIET_STATE, financingNeed: 0.04 };
+    const spike = stepMacro(steady, { ...printer, primaryBalance: -0.5 }, QUIET_INPUTS, P);
+    const usual = stepMacro(steady, printer, QUIET_INPUTS, P);
+    const moved = 1 - 2 ** (-1 / P.financingHalfLifeMonths);
+    expect(spike.fiscalDeficit - usual.fiscalDeficit).toBeCloseTo(0.48, 12);
+    expect(spike.monetizedDeficit - usual.monetizedDeficit).toBeCloseTo(0.48 * moved, 12);
   });
 
   it('the risk premium saturates', () => {
@@ -664,14 +710,18 @@ describe('macro block: mechanisms', () => {
       const total = step.state.domesticDebt + step.state.foreignDebt;
       const growth = (step.state.inflation + inputs.potentialGrowth) / 12;
       const depreciation = step.state.logExchangeRate - state.logExchangeRate;
-      const premium = state.marketExclusion > 0 || state.foreignDebt < 0 ? 0 : step.riskPremium;
+      const excluded = state.marketExclusion > 0;
+      const premium = excluded || state.foreignDebt < 0 ? 0 : step.riskPremium;
+      const domesticRate = excluded
+        ? step.state.inflation + inputs.anchorRate - inputs.anchorInflation
+        : step.state.effectiveDebtRate;
       const expected =
-        state.domesticDebt * Math.exp(step.state.effectiveDebtRate / 12 - growth) +
+        state.domesticDebt * Math.exp(domesticRate / 12 - growth) +
         state.foreignDebt * Math.exp((inputs.anchorRate + premium) / 12 - growth + depreciation) -
         policy.primaryBalance / 12 -
         step.monetizedDeficit / 12;
       // In an exclusion, anything above the restructured level is written off as well.
-      const capped = state.marketExclusion > 0 ? Math.min(expected, RESTRUCTURED_DEBT) : expected;
+      const capped = excluded ? Math.min(expected, RESTRUCTURED_DEBT) : expected;
       expect(total).toBeCloseTo(capped, 12);
       expect(step.state.domesticDebt).toBeGreaterThanOrEqual(0);
     }
@@ -691,9 +741,12 @@ describe('macro block: mechanisms', () => {
   });
 
   it('in market exclusion nothing is refinanced, a deficit is printed, and capital only leaves', () => {
+    // Inflation well above the anchor's, so indexation and market rates are told apart.
     const excluded: MacroState = {
       ...QUIET_STATE,
       marketExclusion: 12,
+      adaptiveExpectation: 0.25,
+      credibility: 0.2,
       domesticDebt: 0.8,
       foreignDebt: 0.1,
       effectiveDebtRate: 0.4,
@@ -701,18 +754,27 @@ describe('macro block: mechanisms', () => {
     };
     const risky = { ...QUIET_INPUTS, politicalRiskPremium: 0.2 };
     const balanced = stepMacro(excluded, BASE_POLICY, risky, P);
-    // The restructured debt is indexed and pays no premium: market rates do not reach it.
+    expect(balanced.state.inflation).toBeGreaterThan(0.1);
+    // The restructured debt is indexed, foreign debt pays the anchor rate, and interest is
+    // capitalized rather than paid, so nothing needs financing.
     const worldRealRate = QUIET_INPUTS.anchorRate - QUIET_INPUTS.anchorInflation;
+    const growth = (balanced.state.inflation + QUIET_INPUTS.potentialGrowth) / 12;
     expect(balanced.state.domesticDebt).toBeCloseTo(
       0.8 * Math.exp((worldRealRate - QUIET_INPUTS.potentialGrowth) / 12),
       12,
     );
-    expect(balanced.fiscalDeficit).toBeCloseTo(
-      0.8 * (balanced.state.inflation + worldRealRate) + 0.1 * QUIET_INPUTS.anchorRate,
+    expect(balanced.state.foreignDebt).toBeCloseTo(
+      0.1 * Math.exp(QUIET_INPUTS.anchorRate / 12 - growth + balanced.state.logExchangeRate),
       12,
     );
+    expect(balanced.fiscalDeficit).toBeCloseTo(0, 12);
     expect(balanced.monetizedDeficit).toBe(0);
     expect(balanced.capitalFlow).toBeLessThanOrEqual(0);
+    // When the market reopens the restructured debt is refinanced at the market rate.
+    expect(balanced.state.effectiveDebtRate).toBeCloseTo(
+      excluded.policyRate + balanced.riskPremium + P.termPremium,
+      12,
+    );
     // A primary deficit must be printed in full, even if the law says to borrow abroad.
     const printing = (foreignBorrowingShare: number) =>
       stepMacro(
@@ -750,8 +812,9 @@ describe('macro block: mechanisms', () => {
     const fresh = stepMacro(state, BASE_POLICY, QUIET_INPUTS, P);
     const clean = stepMacro(QUIET_STATE, BASE_POLICY, QUIET_INPUTS, P);
     expect(fresh.riskPremium).toBeGreaterThan(clean.riskPremium + 0.5 * P.defaultReputationPremium);
-    for (let month = 0; month < P.reputationHalfLifeMonths; month++) {
-      state = stepMacro(state, BASE_POLICY, QUIET_INPUTS, P).state;
+    const params = { ...P, reputationHalfLifeMonths: 50 }; // unlike every other half-life
+    for (let month = 0; month < params.reputationHalfLifeMonths; month++) {
+      state = stepMacro(state, BASE_POLICY, QUIET_INPUTS, params).state;
     }
     expect(state.reputationPremium).toBeCloseTo(P.defaultReputationPremium / 2, 12);
   });
@@ -765,6 +828,102 @@ describe('macro block: mechanisms', () => {
         expect(x.capitalFlow).toBeLessThanOrEqual(0);
       }
     }
+  });
+
+  it('under a held currency the rate follows only its own share of expected inflation', () => {
+    const held = { ...BASE_POLICY, exchangeRateFlexibility: 0 }; // independent, open capital
+    const defense = P.reserveDefenseWeight * held.capitalMobility;
+    const ownShare = 1 - defense / (1 + defense);
+    const calm = stepMacro(QUIET_STATE, held, QUIET_INPUTS, P);
+    const worried = stepMacro({ ...QUIET_STATE, adaptiveExpectation: 0.13 }, held, QUIET_INPUTS, P);
+    const moreExpected = worried.state.expectedInflation - calm.state.expectedInflation;
+    const higherRate = worried.state.policyRate - calm.state.policyRate;
+    expect(higherRate).toBeGreaterThanOrEqual(ownShare * moreExpected - 1e-12);
+    expect(higherRate).toBeLessThan(ownShare * moreExpected + P.maxRuleAdjustment * ownShare);
+  });
+
+  it('a floor that binds is not remembered as a tight stance once it stops binding', () => {
+    // A year of deflation at the floor, then two years of inflation pressure.
+    const plan = {
+      ...scenario('baseline'),
+      months: 84,
+      start: { ...scenario('baseline').start, credibility: 0.3 },
+      shocks: [
+        { fromMonth: 0, untilMonth: 24, costPush: -0.3 },
+        { fromMonth: 36, untilMonth: 60, costPush: 0.3 },
+      ],
+    };
+    const r = runScenario(plan);
+    expect(r.some((x) => x.policyRate === P.policyRateFloor)).toBe(true);
+    for (const x of r) {
+      if (x.policyRate > P.policyRateFloor) {
+        expect(x.realRate).toBeLessThanOrEqual(P.neutralRealRate + P.maxRuleAdjustment + 1e-9);
+      }
+    }
+  });
+
+  it('investors expect a held currency that has drifted out of line to be realigned', () => {
+    const peg = { ...PEG, governmentRate: 0.06 };
+    const inflating = { ...QUIET_STATE, adaptiveExpectation: 0.13, expectedInflation: 0.13 };
+    const halfOut = stepMacro(
+      { ...inflating, realExchangeRate: -0.5 * P.maxRealExchangeRateDeviation },
+      peg,
+      QUIET_INPUTS,
+      P,
+    );
+    const drift = halfOut.state.expectedInflation - QUIET_INPUTS.anchorInflation;
+    const differential = 0.06 - QUIET_INPUTS.anchorRate - halfOut.riskPremium - 0.5 * drift;
+    expect(halfOut.capitalFlow).toBeCloseTo(
+      P.maxCapitalFlow * Math.tanh((peg.capitalMobility * differential) / P.maxCapitalFlow),
+      12,
+    );
+  });
+
+  it('an overvalued peg loses its reserves and breaks instead of attracting capital', () => {
+    // A peg whose government prints a deficit: inflation outruns the anchor's.
+    const printingPeg = withPolicy(scenario('peg-closed-capital'), {
+      capitalMobility: 8,
+      governmentRate: 0.05,
+      primaryBalance: -0.03,
+      monetizedShare: 1,
+    });
+    const r = runScenario({ ...printingPeg, months: 240 });
+    const collapse = r.findIndex((x) => x.pegCollapsed);
+    expect(collapse).toBeGreaterThan(0);
+    expect(at(r, collapse - 1).reserves).toBeLessThan(printingPeg.start.reserves);
+  });
+
+  it('beyond the band a real misalignment is not forced back', () => {
+    const band = P.maxRealExchangeRateDeviation;
+    const step = stepMacro(
+      { ...QUIET_STATE, realExchangeRate: band + 0.5 },
+      BASE_POLICY,
+      QUIET_INPUTS,
+      P,
+    );
+    expect(step.state.realExchangeRate).toBeGreaterThan(band);
+  });
+
+  it('the reputation premium sits inside the risk-premium ceiling', () => {
+    const step = stepMacro(
+      { ...QUIET_STATE, reputationPremium: 0.3 },
+      BASE_POLICY,
+      { ...QUIET_INPUTS, politicalRiskPremium: 0.3 },
+      P,
+    );
+    expect(step.riskPremium).toBeLessThanOrEqual(P.maxRiskPremium);
+  });
+
+  it('the first state expects a credibility-weighted mix of the target and current inflation', () => {
+    const start = {
+      inflation: 0.1,
+      credibility: 0.6,
+      reserves: 6,
+      domesticDebt: 0.5,
+      foreignDebt: 0,
+    };
+    const first = initialMacroState(start, BASE_POLICY, QUIET_INPUTS, P);
+    expect(first.expectedInflation).toBeCloseTo(0.6 * BASE_POLICY.inflationTarget + 0.4 * 0.1, 12);
   });
 
   it('beyond its saturation, a lower real rate stimulates demand no further', () => {
@@ -886,6 +1045,7 @@ describe('macro block: numerical safety over every documented range', () => {
       { ...base, policyChanges: [{ month: 12.5, policy: { primaryBalance: -0.01 } }] },
     ];
     expect(() => runScenario(base, { ...P, phillipsSlope: 5 })).toThrow(RangeError);
+    expect(() => runScenario(base, P, { ...D, fiscalMultiplier: 5 })).toThrow(RangeError);
     for (const plan of invalid) expect(() => runScenario(plan)).toThrow(RangeError);
   });
 

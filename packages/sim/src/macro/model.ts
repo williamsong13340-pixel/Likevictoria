@@ -60,10 +60,20 @@ export interface MacroState {
   readonly adaptiveExpectation: number;
   /** Inflation that people expect for the month; the policy rate passes it through at once. */
   readonly expectedInflation: number;
-  /** Money printing as people perceive it: the monetized deficit averaged over recent months. */
+  /**
+   * Money printing as people perceive it. They notice it as fast as they notice inflation: within
+   * weeks in a hyperinflation, over months when inflation is low.
+   */
   readonly perceivedMonetization: number;
   readonly credibility: number;
   readonly policyRate: number;
+  /** The government's cash deficit averaged over recent months: what the central bank finances. */
+  readonly financingNeed: number;
+  /**
+   * The part of the policy rate that does not move one for one with expected inflation, before
+   * the floor: a floor that binds does not leave the central bank remembering a high real rate.
+   */
+  readonly policyStance: number;
   /** Log of domestic currency per unit of anchor currency; rising means depreciation. */
   readonly logExchangeRate: number;
   /** Log real exchange rate relative to equilibrium; positive means undervalued. */
@@ -75,7 +85,10 @@ export interface MacroState {
   readonly domesticDebt: number;
   /** Anchor-currency debt valued at the current exchange rate; negative means net assets. */
   readonly foreignDebt: number;
-  /** Average rate on domestic debt; it follows market rates as the debt is refinanced. */
+  /**
+   * Average rate on domestic debt; it follows market rates as the debt is refinanced. During a
+   * market exclusion it is the market rate at which the restructured debt will be refinanced.
+   */
   readonly effectiveDebtRate: number;
   readonly logPriceLevel: number;
   /** Months left during which a government that defaulted cannot borrow. */
@@ -95,6 +108,10 @@ export interface MacroStep {
    * with the current account at the month's new real exchange rate.
    */
   readonly financingGap: number;
+  /**
+   * The deficit to be financed in cash: interest plus the primary deficit. During a market
+   * exclusion interest is capitalized, so only the primary deficit counts.
+   */
   readonly fiscalDeficit: number;
   readonly monetizedDeficit: number;
   /** Reserves ran out under a peg; the caller must move the country to a floating regime. */
@@ -162,13 +179,14 @@ export function initialMacroState(
   const expectedInflation =
     start.credibility * policy.inflationTarget + (1 - start.credibility) * start.inflation;
   const anchorWeight = anchorWeightOf(policy, p);
+  const policyStance = policy.independentCentralBank
+    ? ruleStanceOf(expectedInflation, riskPremium, anchorWeight, policy, inputs, p)
+    : policy.governmentRate - (1 - anchorWeight) * expectedInflation;
   const policyRate = Math.max(
     p.policyRateFloor,
-    policy.independentCentralBank
-      ? (1 - anchorWeight) * expectedInflation +
-          ruleStanceOf(expectedInflation, riskPremium, anchorWeight, policy, inputs, p)
-      : policy.governmentRate,
+    (1 - anchorWeight) * expectedInflation + policyStance,
   );
+  const effectiveDebtRate = policyRate + riskPremium + p.termPremium;
   return {
     inflation: start.inflation,
     adaptiveExpectation: start.inflation,
@@ -176,13 +194,18 @@ export function initialMacroState(
     perceivedMonetization: 0,
     credibility: start.credibility,
     policyRate,
+    financingNeed:
+      effectiveDebtRate * start.domesticDebt +
+      (inputs.anchorRate + riskPremium) * start.foreignDebt -
+      policy.primaryBalance,
+    policyStance,
     logExchangeRate: 0,
     realExchangeRate: 0,
     pendingPassThrough: 0,
     reserves: start.reserves,
     domesticDebt: start.domesticDebt,
     foreignDebt: start.foreignDebt,
-    effectiveDebtRate: policyRate + riskPremium + p.termPremium,
+    effectiveDebtRate,
     logPriceLevel: 0,
     marketExclusion: 0,
     reputationPremium: 0,
@@ -207,24 +230,27 @@ export function stepMacro(
   );
 
   // Fiscal position. Domestic debt reprices toward market rates as it is refinanced; foreign
-  // debt pays the anchor rate plus the premium. During an exclusion nothing is refinanced: the
-  // restructured debt pays no premium and its interest is capitalized rather than paid in cash,
-  // so only a primary deficit needs financing, and it must be printed.
+  // debt pays the anchor rate plus the premium, and net assets, held abroad, earn the anchor
+  // rate. The central bank prints its share of the government's financing need averaged over
+  // recent months, not of one month's cash flow. During an exclusion nothing is refinanced: the restructured debt pays no premium and its
+  // interest is capitalized rather than paid in cash, so only a primary deficit needs financing,
+  // and it must be printed.
+  const marketRate = state.policyRate + riskPremium + p.termPremium;
   const marketDebtRate = approach(
     state.effectiveDebtRate,
-    state.policyRate + riskPremium + p.termPremium,
+    marketRate,
     p.debtRepricingHalfLifeMonths,
   );
-  // Net assets are held abroad and earn the anchor rate.
   const foreignDebtRate = inputs.anchorRate + (excluded || state.foreignDebt < 0 ? 0 : riskPremium);
+  const cashDeficit = excluded
+    ? -policy.primaryBalance
+    : marketDebtRate * state.domesticDebt +
+      foreignDebtRate * state.foreignDebt -
+      policy.primaryBalance;
+  const financingNeed = approach(state.financingNeed, cashDeficit, p.financingHalfLifeMonths);
   const monetizedDeficit = excluded
-    ? Math.max(0, -policy.primaryBalance)
-    : Math.max(
-        0,
-        marketDebtRate * state.domesticDebt +
-          foreignDebtRate * state.foreignDebt -
-          policy.primaryBalance,
-      ) * policy.monetizedShare;
+    ? Math.max(0, cashDeficit)
+    : Math.max(0, financingNeed) * policy.monetizedShare;
 
   // Credibility is earned by track record: it is judged on remembered inflation.
   const inflationMiss = Math.abs(state.adaptiveExpectation - policy.inflationTarget);
@@ -240,11 +266,15 @@ export function stepMacro(
   // Money-financed deficits move the nominal anchor itself (quantity theory), and money demand
   // shrinks as inflation rises (Cagan), so beyond the seigniorage limit inflation runs away. Money
   // demand never falls below a floor, so only heavy printing can sustain a hyperinflation. People
-  // judge printing by its recent average, not by one month's figure.
+  // take in printing at the speed at which they take in inflation, so once printing stops in a
+  // hyperinflation, the anchor returns to the target within weeks.
+  const memoryHalfLife =
+    p.expectationHalfLifeMonths /
+    (1 + p.expectationAttention * Math.max(0, state.adaptiveExpectation));
   const perceivedMonetization = approach(
     state.perceivedMonetization,
     monetizedDeficit,
-    p.expectationHalfLifeMonths,
+    memoryHalfLife,
   );
   const moneyDemand = Math.max(
     p.minMoneyDemand,
@@ -261,40 +291,45 @@ export function stepMacro(
   // Expected inflation passes into the rate at once (Fisher effect); only the stance is smoothed,
   // so the real rate never lags far behind a surge or a collapse of inflation.
   const anchorWeight = anchorWeightOf(policy, p);
-  const previousStance = state.policyRate - (1 - anchorWeight) * state.expectedInflation;
+  const policyStance = policy.independentCentralBank
+    ? approach(
+        state.policyStance,
+        ruleStanceOf(expectedInflation, riskPremium, anchorWeight, policy, inputs, p),
+        p.policyRateHalfLifeMonths,
+      )
+    : policy.governmentRate - (1 - anchorWeight) * expectedInflation;
   const policyRate = Math.max(
     p.policyRateFloor,
-    policy.independentCentralBank
-      ? (1 - anchorWeight) * expectedInflation +
-          approach(
-            previousStance,
-            ruleStanceOf(expectedInflation, riskPremium, anchorWeight, policy, inputs, p),
-            p.policyRateHalfLifeMonths,
-          )
-      : policy.governmentRate,
+    (1 - anchorWeight) * expectedInflation + policyStance,
   );
 
   // Balance of payments. Capital chases the return differential net of expected depreciation;
   // where the currency floats, investors also expect the real exchange rate to revert to
   // equilibrium, which is what stops the flows (Dornbusch overshooting). Flows saturate.
-  const baseDifferential =
-    policyRate -
-    inputs.anchorRate -
-    riskPremium -
-    flexibility * (expectedInflation - inputs.anchorInflation);
+  // The fixed part of a held currency does not follow inflation, so its real rate drifts; the
+  // further it has drifted out of line, the more of the inflation differential investors expect
+  // a realignment to pass on (at the edge of the band, all of it). Both depend on the real rate
+  // the market settles at, so they enter the implicit solve below.
+  const q = state.realExchangeRate;
+  const band = p.maxRealExchangeRateDeviation;
+  const drift = expectedInflation - inputs.anchorInflation;
+  const baseDifferential = policyRate - inputs.anchorRate - riskPremium;
   const reversion = (flexibility * Math.LN2) / p.realExchangeRateHalfLifeYears;
   // Foreign capital stays away from a country in default: during the exclusion it can only leave.
   const flowAt = (realRate: number): number => {
+    const outOfLine = Math.min(1, Math.max(0, -realRate * Math.sign(drift)) / band);
+    const expectedDepreciation = (flexibility + (1 - flexibility) * outOfLine) * drift;
     const flow =
       p.maxCapitalFlow *
       Math.tanh(
-        (policy.capitalMobility * (baseDifferential + reversion * realRate)) / p.maxCapitalFlow,
+        (policy.capitalMobility *
+          (baseDifferential - expectedDepreciation + reversion * realRate)) /
+          p.maxCapitalFlow,
       );
     return excluded ? Math.min(0, flow) : flow;
   };
   // The market move solves q' − q = −gain·(CA(q') + flow(q')) with CA linearized around q, so
   // the feedback through trade and through capital flows is implicit and cannot oscillate.
-  const q = state.realExchangeRate;
   const sensitivity = Math.max(0, inputs.currentAccountSensitivity);
   const gain = (flexibility * p.floatSensitivity) / 12;
   const scale = gain / (1 + gain * sensitivity);
@@ -305,7 +340,6 @@ export function stepMacro(
   );
   // Real misalignment is bounded (in hyperinflation people dollarize instead); the band only
   // stops further divergence and never forces a jump back into it.
-  const band = p.maxRealExchangeRateDeviation;
   const marketRealRate = clamp(solvedRealRate, Math.min(q, -band), Math.max(q, band));
   const capitalFlow = flowAt(marketRealRate);
   const pressure = inputs.currentAccount + sensitivity * (marketRealRate - q) + capitalFlow;
@@ -330,12 +364,7 @@ export function stepMacro(
     p.minInflation,
     p.maxInflation,
   );
-  const adaptiveExpectation = approach(
-    state.adaptiveExpectation,
-    inflation,
-    p.expectationHalfLifeMonths /
-      (1 + p.expectationAttention * Math.max(0, state.adaptiveExpectation)),
-  );
+  const adaptiveExpectation = approach(state.adaptiveExpectation, inflation, memoryHalfLife);
   // The fixed part of the exchange rate does not follow inflation, so the real exchange rate
   // drifts with the inflation differential; a held currency that drifts to the edge of the band
   // is realigned rather than left to drift further.
@@ -351,13 +380,9 @@ export function stepMacro(
 
   // Restructured domestic debt is indexed during an exclusion: it accrues inflation plus the
   // anchor's real rate, so neither inflation nor market rates move its real value much.
-  const effectiveDebtRate = excluded
+  const domesticDebtRate = excluded
     ? inflation + inputs.anchorRate - inputs.anchorInflation
     : marketDebtRate;
-  const fiscalDeficit =
-    effectiveDebtRate * state.domesticDebt +
-    foreignDebtRate * state.foreignDebt -
-    policy.primaryBalance;
 
   // Debt ratios with exact compounding: domestic debt is eroded by inflation, foreign debt is
   // revalued by depreciation instead. Printed money retires domestic debt first. A negative stock
@@ -367,7 +392,7 @@ export function stepMacro(
   const primaryDeficit = -policy.primaryBalance / 12;
   const foreignShare = excluded ? 0 : policy.foreignBorrowingShare;
   const accruedDomestic =
-    state.domesticDebt * Math.exp(effectiveDebtRate / 12 - growth) +
+    state.domesticDebt * Math.exp(domesticDebtRate / 12 - growth) +
     (1 - foreignShare) * primaryDeficit -
     monetizedDeficit / 12;
   const accruedForeign =
@@ -392,13 +417,15 @@ export function stepMacro(
       perceivedMonetization,
       credibility,
       policyRate,
+      financingNeed,
+      policyStance,
       logExchangeRate: state.logExchangeRate + depreciation,
       realExchangeRate,
       pendingPassThrough: state.pendingPassThrough - passedThrough + realDepreciation,
       reserves: state.reserves + reserveChange,
       domesticDebt: domesticDebt * kept,
       foreignDebt: foreignDebt * kept,
-      effectiveDebtRate,
+      effectiveDebtRate: excluded ? marketRate : marketDebtRate,
       logPriceLevel: state.logPriceLevel + inflation / 12,
       marketExclusion: defaulted ? p.marketExclusionMonths : Math.max(0, state.marketExclusion - 1),
       reputationPremium: defaulted
@@ -409,7 +436,7 @@ export function stepMacro(
     riskPremium,
     capitalFlow,
     financingGap,
-    fiscalDeficit,
+    fiscalDeficit: cashDeficit,
     monetizedDeficit,
     pegCollapsed,
     defaulted,
