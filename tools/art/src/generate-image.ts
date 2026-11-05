@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, extname } from 'node:path';
 import { parseArgs } from 'node:util';
 
-const MODEL = 'gpt-image-2.5-sunburst';
+const MODEL = 'gpt-image-2.6-sunburst';
 const FORMATS = new Set(['png', 'jpeg', 'webp']);
 
 const { values } = parseArgs({

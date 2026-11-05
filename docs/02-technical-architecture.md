@@ -112,7 +112,7 @@ likevictoria/
 
 ## 7. 美术素材管线
 
-- 出图使用 OpenAI 的 `gpt-image-2.5-sunburst`：`pnpm art --prompt-file <提示词.md> --out <图片.webp>`。提示词文件与图片放在一起，保证可复现。
+- 出图使用 OpenAI 的 `gpt-image-2.6-sunburst`：`pnpm art --prompt-file <提示词.md> --out <图片.webp>`。提示词文件与图片放在一起，保证可复现（`art/style-samples/` 中最早的三张样图由 2.5 版生成）。
 - 省着用：先出少量样张让用户确认风格，再批量制作图标与界面素材。
 - 生成图中的地图边界和文字不能直接作为素材：地图由真实数据渲染，文字由游戏渲染。
 
