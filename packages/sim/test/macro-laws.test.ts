@@ -11,6 +11,7 @@ import {
   currentAccountAt,
   DEFAULT_DEMAND_PROXY_PARAMS,
   DEMAND_PROXY_PARAM_SPECS,
+  stepDemandProxy,
   type DemandProxyParams,
 } from '../src/macro/demand-proxy.ts';
 import {
@@ -764,6 +765,35 @@ describe('macro block: mechanisms', () => {
         expect(x.capitalFlow).toBeLessThanOrEqual(0);
       }
     }
+  });
+
+  it('beyond its saturation, a lower real rate stimulates demand no further', () => {
+    const gapAfterOneMonth = (realRate: number): number =>
+      stepDemandProxy(
+        currentAccountAt(0, 0, D),
+        {
+          realRate,
+          riskPremium: 0,
+          neutralRealRate: P.neutralRealRate,
+          primaryBalance: 0,
+          costPush: 0,
+          demandShock: 0,
+          inflation: 0.03,
+          inflationTarget: 0.03,
+          realExchangeRate: 0,
+        },
+        D,
+      ).outputGap;
+    // The real rate's push on demand never exceeds realRateSensitivity × realRateSaturation, so a
+    // real rate of −1000% (a fixed rate in a hyperinflation) is no stronger a stimulus than −100%.
+    const largestPush = D.realRateSensitivity * D.realRateSaturation;
+    const largestGap =
+      D.maxOutputGap *
+      Math.tanh(largestPush / D.maxOutputGap) *
+      (1 - 2 ** (-1 / D.gapHalfLifeMonths));
+    expect(gapAfterOneMonth(-10)).toBeGreaterThan(0);
+    expect(gapAfterOneMonth(-10)).toBeLessThanOrEqual(largestGap + 1e-12);
+    expect(gapAfterOneMonth(-10)).toBeCloseTo(gapAfterOneMonth(-1), 9);
   });
 
   it('the current account worsens when the economy overheats and improves after a real depreciation', () => {
