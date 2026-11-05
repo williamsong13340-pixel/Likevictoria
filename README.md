@@ -8,10 +8,29 @@
 
 ## 当前状态
 
-设计阶段，尚无代码。
+- 设计文档（见下表）。
+- 质量护栏：TypeScript 严格模式、ESLint、Prettier、Knip、自研静态分析、规律测试、对抗性审查子代理。
+- 宏观经济块原型：通胀、预期与信誉、利率、汇率与储备、债务，10 个可运行的场景。
+- 美术风格样图（待确认）：`art/style-samples/`。
+
+## 快速开始
+
+需要 Node 22.18 以上与 pnpm。
+
+```bash
+pnpm install
+pnpm check                 # 全部静态检查与测试
+pnpm macro                 # 列出宏观场景
+pnpm macro disinflation    # 运行一个场景（按年输出）
+pnpm macro --params        # 参数说明：数值、单位、范围、含义
+```
+
+## 文档
 
 | 文档 | 内容 |
 |---|---|
-| [游戏设计文档](docs/01-game-design.md) | 设计支柱、核心循环，以及人口、经济、政治、外交、科技、环境各系统 |
-| [技术架构](docs/02-technical-architecture.md) | 技术选型、模拟内核、经济模型的数学、地图管线、测试与历史校准 |
-| [开发路线图](docs/03-roadmap.md) | 里程碑与完成标准、第一阶段任务清单、风险 |
+| [游戏设计](docs/01-game-design.md) | 设计支柱、核心循环，以及人口、经济、政治、外交、科技、环境各系统 |
+| [技术架构](docs/02-technical-architecture.md) | 技术选型、模拟内核、地图渲染、质量护栏 |
+| [开发路线图](docs/03-roadmap.md) | 真实世界优先的里程碑与完成标准 |
+| [经济模型](docs/04-economic-model.md) | 微观与宏观怎么分工、为什么好调、复现哪些经济学规律 |
+| [内容目录](docs/05-content-catalog.md) | 约 100 种商品、58 组法律，以及只改数据就能扩充的机制 |

@@ -1,0 +1,12 @@
+{
+  "name": "@likevictoria/analysis",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "analyze": "node src/main.ts"
+  },
+  "dependencies": {
+    "typescript": "6.0.3"
+  }
+}

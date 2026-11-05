@@ -1,0 +1,12 @@
+{
+  "name": "@likevictoria/headless",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "macro": "node src/macro-sandbox.ts"
+  },
+  "dependencies": {
+    "@likevictoria/sim": "workspace:*"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "includeEntryExports": true,
+  "ignore": ["tools/analysis/test/fixtures/**"],
+  "workspaces": {
+    ".": {},
+    "packages/sim": {
+      "project": ["src/**/*.ts!", "test/**/*.ts"]
+    },
+    "tools/headless": {
+      "entry": ["src/macro-sandbox.ts!"],
+      "project": ["src/**/*.ts!"]
+    },
+    "tools/analysis": {
+      "entry": ["src/main.ts!"],
+      "project": ["src/**/*.ts!", "test/**/*.ts"]
+    },
+    "tools/art": {
+      "entry": ["src/generate-image.ts!"],
+      "project": ["src/**/*.ts!"]
+    }
+  }
+}

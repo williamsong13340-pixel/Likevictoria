@@ -1,0 +1,9 @@
+{
+  "name": "@likevictoria/art",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "node src/generate-image.ts"
+  }
+}
