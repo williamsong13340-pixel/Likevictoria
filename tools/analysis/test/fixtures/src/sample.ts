@@ -127,7 +127,42 @@ export class Square extends Base {
   override area(w: number, h: number): number {
     return add(w, h);
   }
+  // Base has an instance `area`, not a static one, so this static member is not required.
+  static area(w: number, h: number): number {
+    return add(w, h);
+  }
   helper(a: number, b: number): number {
     return add(a, b);
   }
+}
+
+// A computed name can be required too.
+export class Bag implements Iterable<number> {
+  private readonly items = [1, 2];
+  [Symbol.iterator](): Iterator<number> {
+    return this.items[Symbol.iterator]();
+  }
+}
+
+// Wrappers that change the type: discarding a promise, awaiting a plain value.
+async function work(a: number): Promise<void> {
+  await Promise.resolve(a + 1);
+}
+export const onClick = (a: number): void => void work(a);
+function syncWork(a: number): number {
+  return a * 3;
+}
+export async function lifted(a: number): Promise<number> {
+  return await syncWork(a);
+}
+
+// An arrow field that calls through `this.service` binds the receiver.
+class Service {
+  handle(a: number): number {
+    return a + 1;
+  }
+}
+export class Panel {
+  private readonly service = new Service();
+  onChange = (a: number): number => this.service.handle(a);
 }

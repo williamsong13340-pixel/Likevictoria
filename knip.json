@@ -9,7 +9,7 @@
     },
     "tools/headless": {
       "entry": ["src/macro-sandbox.ts!"],
-      "project": ["src/**/*.ts!"]
+      "project": ["src/**/*.ts!", "test/**/*.ts"]
     },
     "tools/analysis": {
       "entry": ["src/main.ts!"],

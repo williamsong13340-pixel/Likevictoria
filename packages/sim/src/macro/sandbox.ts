@@ -18,7 +18,7 @@ import { DEFAULT_MACRO_PARAMS, MACRO_PARAM_SPECS, type MacroParams } from './par
 type PolicyNumbers = Omit<MacroPolicy, 'independentCentralBank'>;
 
 /** Valid ranges of policy settings, which laws and scenarios supply as data. */
-const POLICY_LIMITS: ParamSpecs<PolicyNumbers> = {
+export const POLICY_LIMITS: ParamSpecs<PolicyNumbers> = {
   exchangeRateFlexibility: {
     unit: '0—1',
     min: 0,
@@ -32,6 +32,37 @@ const POLICY_LIMITS: ParamSpecs<PolicyNumbers> = {
   primaryBalance: { unit: 'GDP比例', min: -0.2, max: 0.2, meaning: '基本财政盈余' },
   monetizedShare: { unit: '比例', min: 0, max: 1, meaning: '由央行印钞弥补的赤字比例' },
   foreignBorrowingShare: { unit: '比例', min: 0, max: 1, meaning: '新借款中外币的比例' },
+};
+
+/** Valid starting conditions. */
+const START_LIMITS: ParamSpecs<MacroStart> = {
+  inflation: { unit: '年率', min: -0.5, max: 20, meaning: '起始通胀' },
+  credibility: { unit: '0—1', min: 0, max: 1, meaning: '起始信誉' },
+  reserves: { unit: '月进口额', min: 0, max: 60, meaning: '起始外汇储备' },
+  domesticDebt: { unit: 'GDP比例', min: 0, max: 5, meaning: '起始本币债务' },
+  foreignDebt: { unit: 'GDP比例', min: -5, max: 5, meaning: '起始外币债务；负数为海外净资产' },
+};
+
+type ScenarioNumbers = Pick<
+  MacroScenario,
+  'anchorRate' | 'anchorInflation' | 'potentialGrowth' | 'importShare' | 'politicalRiskPremium'
+>;
+
+/** Valid ranges of the outside world and fixed structure a scenario assumes. */
+const SCENARIO_LIMITS: ParamSpecs<ScenarioNumbers> = {
+  anchorRate: { unit: '年率', min: -0.02, max: 0.3, meaning: '锚货币利率' },
+  anchorInflation: { unit: '年率', min: -0.05, max: 0.2, meaning: '锚货币通胀' },
+  potentialGrowth: { unit: '年率', min: -0.05, max: 0.15, meaning: '潜在增长率' },
+  importShare: { unit: 'GDP比例', min: 0.02, max: 1, meaning: '进口占 GDP 的比例，必须为正' },
+  politicalRiskPremium: { unit: '年率', min: 0, max: 0.3, meaning: '政治风险溢价' },
+};
+
+type ShockSizes = Required<Pick<ScenarioShock, 'costPush' | 'demandShock'>>;
+
+/** Valid sizes of a shock in any month. */
+const SHOCK_LIMITS: ParamSpecs<ShockSizes> = {
+  costPush: { unit: '年率', min: -0.3, max: 0.3, meaning: '成本冲击（如油价）' },
+  demandShock: { unit: 'GDP比例', min: -0.3, max: 0.3, meaning: '需求冲击' },
 };
 
 /** A temporary shock, active for months in [fromMonth, untilMonth). */
@@ -96,6 +127,16 @@ export function runScenario(
 ): MonthRecord[] {
   validateParams(macroParams, MACRO_PARAM_SPECS);
   validateParams(demandParams, DEMAND_PROXY_PARAM_SPECS);
+  validateParams(scenario.start, START_LIMITS);
+  validateParams<ScenarioNumbers>(scenario, SCENARIO_LIMITS);
+  const months = [
+    scenario.months,
+    ...scenario.policyChanges.map((change) => change.month),
+    ...scenario.shocks.flatMap((shock) => [shock.fromMonth, shock.untilMonth]),
+  ];
+  if (!months.every((month) => Number.isInteger(month) && month >= 0) || scenario.months < 1) {
+    throw new RangeError(`场景 ${scenario.id} 的月份必须是非负整数，长度至少 1 个月`);
+  }
 
   let policy = scenario.policy;
   validateParams<PolicyNumbers>(policy, POLICY_LIMITS);
@@ -129,6 +170,7 @@ export function runScenario(
         demandShock += shock.demandShock ?? 0;
       }
     }
+    validateParams({ costPush, demandShock }, SHOCK_LIMITS);
 
     const step = stepMacro(state, policy, inputsFor(costPush), macroParams);
     state = step.state;
@@ -137,7 +179,7 @@ export function runScenario(
     records.push({
       month,
       inflation: state.inflation,
-      expectedInflation: step.expectedInflation,
+      expectedInflation: state.expectedInflation,
       credibility: state.credibility,
       policyRate: state.policyRate,
       realRate: step.realRate,

@@ -1,10 +1,11 @@
 // Tests for the macro block, in four groups:
-//  1. regularities at the calibrated parameters, as controlled comparisons;
+//  1. regularities at the calibrated parameters: controlled comparisons where two runs differ in one
+//     mechanism, and single-run checks where the regularity is a pattern within one run;
 //  2. the same regularities across a calibrated neighbourhood (every parameter within ±20%);
 //  3. mechanism-level checks, each of which fails if its mechanism is removed;
-//  4. numerical safety over every documented parameter range, including the range endpoints.
-// The full documented ranges promise numerical safety; the economic regularities are promised
-// for the calibrated neighbourhood, where they are tested.
+//  4. numerical safety over every documented range of parameters and policies.
+// The documented ranges promise numerical safety; the economic regularities are promised for the
+// calibrated neighbourhood, where they are tested.
 import { describe, expect, it } from 'vitest';
 import {
   currentAccountAt,
@@ -20,7 +21,12 @@ import {
   type MacroState,
 } from '../src/macro/model.ts';
 import { DEFAULT_MACRO_PARAMS, MACRO_PARAM_SPECS, type MacroParams } from '../src/macro/params.ts';
-import { runScenario, type MacroScenario, type MonthRecord } from '../src/macro/sandbox.ts';
+import {
+  POLICY_LIMITS,
+  runScenario,
+  type MacroScenario,
+  type MonthRecord,
+} from '../src/macro/sandbox.ts';
 import { MACRO_SCENARIOS } from '../src/macro/scenarios.ts';
 import type { ParamSpecs } from '../src/params.ts';
 
@@ -48,6 +54,10 @@ const mean = (xs: readonly number[]): number => xs.reduce((a, b) => a + b, 0) / 
 /** Output lost to recessions from `from` onward, in GDP-years. */
 const outputLoss = (records: readonly MonthRecord[], from: number): number =>
   -records.slice(from).reduce((sum, r) => sum + Math.min(0, r.outputGap), 0) / 12;
+
+/** Months in which a run defaults. */
+const defaultMonths = (records: readonly MonthRecord[]): number[] =>
+  records.flatMap((r) => (r.defaulted ? [r.month] : []));
 
 /** Deterministic generator for the property tests. */
 function lcg(seed: number): () => number {
@@ -79,6 +89,12 @@ function sampleParams<T extends { readonly [K in keyof T]: number }>(
   }
   return sampled as T;
 }
+
+/** Any policy the documented limits allow. */
+const samplePolicy = (random: () => number): MacroPolicy => ({
+  ...sampleParams(POLICY_LIMITS, random, 'uniform'),
+  independentCentralBank: random() < 0.5,
+});
 
 /** Every parameter scaled by a random factor in [0.8, 1.2] around its default, kept in range. */
 function nearDefaults<T extends { readonly [K in keyof T]: number }>(
@@ -120,15 +136,26 @@ function steadyState(
   };
 }
 
-/** Counts reversals of month-to-month inflation changes larger than one percentage point. */
-function reversals(records: readonly MonthRecord[]): number {
-  let count = 0;
-  for (let k = 2; k < records.length; k++) {
-    const change = at(records, k).inflation - at(records, k - 1).inflation;
-    const previous = at(records, k - 1).inflation - at(records, k - 2).inflation;
-    if (change * previous < 0 && Math.abs(change) > 0.01) count++;
+/**
+ * The largest number of month-to-month inflation reversals larger than one percentage point in
+ * any 121-month window. A period-2 or period-3 cycle reverses almost every month.
+ */
+function maxReversalsPerDecade(records: readonly MonthRecord[]): number {
+  const reversal = records.map((r, k) => {
+    const previous = records[k - 1];
+    const older = records[k - 2];
+    if (previous === undefined || older === undefined) return 0;
+    const change = r.inflation - previous.inflation;
+    const before = previous.inflation - older.inflation;
+    return change * before < 0 && Math.abs(change) > 0.01 ? 1 : 0;
+  });
+  let inWindow = 0;
+  let most = 0;
+  for (const [k, flag] of reversal.entries()) {
+    inWindow += flag - (reversal[k - 121] ?? 0);
+    most = Math.max(most, inWindow);
   }
-  return count;
+  return most;
 }
 
 /** Inputs of a quiet month: no gap, no shocks, balanced external accounts. */
@@ -144,12 +171,18 @@ const QUIET_INPUTS: MacroInputs = {
   anchorInflation: 0.03,
 };
 const BASE_POLICY = scenario('baseline').policy;
+const PEG: MacroPolicy = {
+  ...BASE_POLICY,
+  exchangeRateFlexibility: 0,
+  independentCentralBank: false,
+};
 const QUIET_STATE: MacroState = initialMacroState(
   { inflation: 0.03, credibility: 0.8, reserves: 6, domesticDebt: 0.5, foreignDebt: 0 },
   BASE_POLICY,
   QUIET_INPUTS,
   P,
 );
+const RESTRUCTURED_DEBT = P.defaultDebtThreshold * (1 - P.defaultHaircut);
 
 /** The regularities, each as a predicate over parameter sets (used at defaults and nearby). */
 const REGULARITIES: Readonly<Record<string, (m: MacroParams, d: DemandProxyParams) => boolean>> = {
@@ -160,7 +193,25 @@ const REGULARITIES: Readonly<Record<string, (m: MacroParams, d: DemandProxyParam
       boom.outputGap > 0 && boom.inflation > base.inflation && boom.policyRate > base.policyRate
     );
   },
-  'twin deficits': (m, d) => at(runScenario(scenario('demand-boom'), m, d), 35).currentAccount < 0,
+  'twin deficits, through imports even when the exchange rate cannot move': (m, d) => {
+    const base = at(runScenario(scenario('baseline'), m, d), 35);
+    const boom = at(runScenario(scenario('demand-boom'), m, d), 35);
+    const pegged = withPolicy(scenario('demand-boom'), {
+      exchangeRateFlexibility: 0,
+      capitalMobility: 0.2,
+    });
+    const noPriceEffect = { ...d, tradeElasticity: 0 };
+    const withImports = at(runScenario(pegged, m, noPriceEffect), 35);
+    const withoutImports = at(
+      runScenario(pegged, m, { ...noPriceEffect, importPropensity: 0 }),
+      35,
+    );
+    return (
+      boom.currentAccount < base.currentAccount &&
+      withImports.currentAccount < 0 &&
+      Math.abs(withoutImports.currentAccount) < 1e-9
+    );
+  },
   stagflation: (m, d) =>
     runScenario(scenario('oil-shock-anchored'), m, d)
       .slice(6, 12)
@@ -195,29 +246,40 @@ const REGULARITIES: Readonly<Record<string, (m: MacroParams, d: DemandProxyParam
     };
     return costPerPoint(0.05) > costPerPoint(0.6) && costPerPoint(0.6) > costPerPoint(0.8);
   },
-  'quantity theory: more printing, higher plateau': (m, d) => {
-    const plateau = (primaryBalance: number): number =>
-      mean(
-        runScenario(withPolicy(scenario('fiscal-dominance'), { primaryBalance }), m, d)
-          .slice(120, 180)
-          .map((r) => r.inflation),
-      );
-    return plateau(-0.005) < plateau(-0.01) && plateau(-0.01) < plateau(-0.015);
-  },
-  'seigniorage limit: runaway inflation': (m, d) => {
-    const r = runScenario(scenario('hyperinflation'), m, d);
+  'quantity theory: more printing, a higher but stable plateau': (m, d) => {
+    // A plateau does not climb, and moves less than a fifth of its level in five years.
+    const plateau = (primaryBalance: number): { level: number; stable: boolean } => {
+      const r = runScenario(withPolicy(scenario('fiscal-dominance'), { primaryBalance }), m, d);
+      const level = mean(r.slice(120, 180).map((x) => x.inflation));
+      const drift = at(r, 179).inflation - at(r, 119).inflation;
+      return { level, stable: drift < 0.01 && Math.abs(drift) < 0.2 * level };
+    };
+    const small = plateau(-0.005);
+    const medium = plateau(-0.01);
+    const large = plateau(-0.015);
     return (
-      at(r, 59).inflation > at(r, 47).inflation &&
-      at(r, 47).inflation > at(r, 35).inflation &&
-      at(r, 59).inflation > 1
+      small.level < medium.level &&
+      medium.level < large.level &&
+      [small, medium, large].every((x) => x.stable)
+    );
+  },
+  'seigniorage limit: runaway inflation and collapsing credibility': (m, d) => {
+    const r = runScenario({ ...scenario('hyperinflation'), months: 120 }, m, d);
+    // Inflation keeps accelerating until it nears its ceiling.
+    const accelerates = (from: number, to: number): boolean =>
+      at(r, to).inflation > at(r, from).inflation || at(r, from).inflation > 0.9 * m.maxInflation;
+    return (
+      accelerates(23, 47) &&
+      accelerates(47, 71) &&
+      accelerates(71, 95) &&
+      at(r, 119).inflation > 1 &&
+      at(r, 47).credibility < 0.2
     );
   },
   'inflation tax falls on domestic debt only': (m, d) => {
-    const end = at(runScenario(scenario('hyperinflation'), m, d), 59);
-    return (
-      end.debt - end.foreignDebt < 0.01 &&
-      end.foreignDebt > scenario('hyperinflation').start.foreignDebt
-    );
+    const plan = { ...scenario('hyperinflation'), months: 120 };
+    const end = at(runScenario(plan, m, d), 119);
+    return end.debt - end.foreignDebt < 0.01 && end.foreignDebt > plan.start.foreignDebt;
   },
   'trinity: capital mobility drains a peg': (m, d) => {
     const reserves = (capitalMobility: number): number =>
@@ -258,8 +320,18 @@ const REGULARITIES: Readonly<Record<string, (m: MacroParams, d: DemandProxyParam
         at(r, collapse - 1).foreignDebt * Math.exp(0.9 * m.devaluationSize)
     );
   },
-  'a debt spiral ends in default': (m, d) =>
-    runScenario(scenario('debt-spiral'), m, d).some((r) => r.defaulted),
+  'a debt spiral ends in default, and the next one waits until well after the market reopens': (
+    m,
+    d,
+  ) => {
+    const defaults = defaultMonths(runScenario({ ...scenario('debt-spiral'), months: 600 }, m, d));
+    return (
+      defaults.length > 0 &&
+      defaults.every(
+        (month, k) => k === 0 || month - (defaults[k - 1] ?? 0) > m.marketExclusionMonths + 12,
+      )
+    );
+  },
   'sovereign risk spills into private borrowing': (m, d) => {
     const r = runScenario(scenario('debt-spiral'), m, d);
     const first = r.findIndex((x) => x.defaulted);
@@ -329,6 +401,21 @@ describe('macro block: mechanisms', () => {
     expect(Math.abs(spike.state.policyRate - calm.state.policyRate)).toBeLessThan(0.005);
   });
 
+  it('expected inflation passes into the policy rate at once; only the stance is smoothed', () => {
+    const calm = stepMacro(QUIET_STATE, BASE_POLICY, QUIET_INPUTS, P);
+    const worried = stepMacro(
+      { ...QUIET_STATE, adaptiveExpectation: 0.13 },
+      BASE_POLICY,
+      QUIET_INPUTS,
+      P,
+    );
+    const moreExpected = worried.state.expectedInflation - calm.state.expectedInflation;
+    const higherRate = worried.state.policyRate - calm.state.policyRate;
+    expect(moreExpected).toBeGreaterThan(0.01);
+    expect(higherRate).toBeGreaterThanOrEqual(moreExpected);
+    expect(higherRate).toBeLessThan(moreExpected + P.maxRuleAdjustment);
+  });
+
   it('the rule moves the real rate at most maxRuleAdjustment away from neutral', () => {
     // 100% inflation at minimal credibility, held there by a cost push that exactly sustains it,
     // so expectations stay put and the rate settles at the rule's own target. Capital is closed,
@@ -352,7 +439,19 @@ describe('macro block: mechanisms', () => {
     expect(step.realRate).toBeGreaterThan(P.neutralRealRate + 0.9 * P.maxRuleAdjustment);
   });
 
-  it('credibility is judged on the remembered record, not on one good month', () => {
+  it('the policy rate never goes below its floor, even in a deflation', () => {
+    let state: MacroState = { ...QUIET_STATE, credibility: P.minCredibility };
+    const deflation = { ...QUIET_INPUTS, costPush: -0.1 };
+    const rates: number[] = [];
+    for (let month = 0; month < 36; month++) {
+      state = stepMacro(state, BASE_POLICY, deflation, P).state;
+      rates.push(state.policyRate);
+    }
+    expect(state.expectedInflation + P.neutralRealRate).toBeLessThan(P.policyRateFloor - 0.02);
+    expect(Math.min(...rates)).toBe(P.policyRateFloor);
+  });
+
+  it('credibility is judged on the remembered record, and small misses are tolerated', () => {
     const half = { ...QUIET_STATE, credibility: 0.5 };
     const goodMonthBadRecord = stepMacro(
       { ...half, adaptiveExpectation: 0.15 },
@@ -368,6 +467,14 @@ describe('macro block: mechanisms', () => {
     );
     expect(goodMonthBadRecord.state.credibility).toBeLessThan(0.5);
     expect(badMonthGoodRecord.state.credibility).toBeGreaterThan(0.5);
+    // QUIET_STATE sits at its base credibility; a miss inside the tolerance leaves it there.
+    const nearMiss = stepMacro(
+      { ...QUIET_STATE, adaptiveExpectation: 0.03 + 0.5 * P.inflationMissTolerance },
+      BASE_POLICY,
+      QUIET_INPUTS,
+      P,
+    );
+    expect(nearMiss.state.credibility).toBe(BASE_POLICY.baseCredibility);
   });
 
   it('printing money costs credibility', () => {
@@ -375,6 +482,23 @@ describe('macro block: mechanisms', () => {
     const printed = stepMacro(QUIET_STATE, { ...deficit, monetizedShare: 1 }, QUIET_INPUTS, P);
     const borrowed = stepMacro(QUIET_STATE, deficit, QUIET_INPUTS, P);
     expect(printed.state.credibility).toBeLessThan(borrowed.state.credibility);
+  });
+
+  it('people judge printing by its recent average, and money demand has a floor', () => {
+    // Expected inflation of 500% a year: money demand has collapsed to its floor.
+    const flight: MacroState = { ...QUIET_STATE, adaptiveExpectation: 5, expectedInflation: 5 };
+    const params = { ...P, monetizationCredibilityPenalty: 0 };
+    const government = { ...BASE_POLICY, independentCentralBank: false, primaryBalance: -0.01 };
+    const printing = stepMacro(flight, { ...government, monetizedShare: 1 }, QUIET_INPUTS, params);
+    const borrowing = stepMacro(flight, { ...government, monetizedShare: 0 }, QUIET_INPUTS, params);
+    const perceived =
+      printing.monetizedDeficit * (1 - 2 ** (-1 / params.expectationHalfLifeMonths));
+    expect(printing.state.perceivedMonetization).toBeCloseTo(perceived, 12);
+    expect(printing.state.expectedInflation - borrowing.state.expectedInflation).toBeCloseTo(
+      (printing.state.credibility * params.monetizationInflation * perceived) /
+        params.minMoneyDemand,
+      9,
+    );
   });
 
   it('the risk premium saturates', () => {
@@ -408,30 +532,101 @@ describe('macro block: mechanisms', () => {
     expect(abroad.state.foreignDebt).toBeCloseTo(0.05 / 12, 9);
   });
 
+  it('net assets are held abroad and earn the anchor rate, without a premium', () => {
+    const saver = stepMacro(
+      { ...QUIET_STATE, domesticDebt: 0.01 },
+      { ...BASE_POLICY, primaryBalance: 0.24 },
+      { ...QUIET_INPUTS, politicalRiskPremium: 0.1 },
+      P,
+    );
+    expect(saver.state.domesticDebt).toBe(0);
+    expect(saver.state.foreignDebt).toBeLessThan(0);
+    const rich = stepMacro(
+      { ...QUIET_STATE, domesticDebt: 0, foreignDebt: -1 },
+      { ...BASE_POLICY, primaryBalance: 0 },
+      { ...QUIET_INPUTS, politicalRiskPremium: 0.1 },
+      P,
+    );
+    expect(rich.fiscalDeficit).toBeCloseTo(-QUIET_INPUTS.anchorRate, 12);
+  });
+
   it('a floating currency never touches the reserves', () => {
     for (const id of ['demand-boom', 'oil-shock-anchored', 'disinflation', 'debt-spiral']) {
       for (const r of runScenario(scenario(id))) expect(r.reserves).toBe(6);
     }
   });
 
-  it('when reserves run out, the gap is exceptional financing, not a fake capital inflow', () => {
-    const peg = { ...BASE_POLICY, exchangeRateFlexibility: 0, independentCentralBank: false };
+  it('under a hard peg capital chases the interest differential alone', () => {
     const step = stepMacro(
-      { ...QUIET_STATE, reserves: 0.5 },
-      peg,
-      { ...QUIET_INPUTS, currentAccount: -0.3 },
+      {
+        ...QUIET_STATE,
+        realExchangeRate: 0.4,
+        adaptiveExpectation: 0.12,
+        expectedInflation: 0.12,
+      },
+      { ...PEG, governmentRate: 0.06 },
+      QUIET_INPUTS,
       P,
     );
-    expect(step.state.reserves).toBe(0);
-    // Thin reserves raise the risk premium, so capital leaves; it does not flow in.
-    expect(step.capitalFlow).toBeLessThan(0);
-    expect(step.capitalFlow).toBeGreaterThanOrEqual(-P.maxCapitalFlow);
-    // Lost reserves = current account + capital flow + exceptional financing.
-    expect(step.financingGap).toBeCloseTo(
-      0.3 - step.capitalFlow - 0.5 * QUIET_INPUTS.importShare,
-      9,
+    const differential = 0.06 - QUIET_INPUTS.anchorRate - step.riskPremium;
+    expect(step.capitalFlow).toBeCloseTo(
+      P.maxCapitalFlow * Math.tanh((PEG.capitalMobility * differential) / P.maxCapitalFlow),
+      12,
     );
-    expect(step.pegCollapsed).toBe(true);
+  });
+
+  it('when reserves run out, the gap is exceptional financing, not a fake capital inflow', () => {
+    const drained = { ...QUIET_STATE, reserves: 0.5 };
+    const deficit = { ...QUIET_INPUTS, currentAccount: -0.3 };
+    for (const exchangeRateFlexibility of [0, 0.5]) {
+      const step = stepMacro(drained, { ...PEG, exchangeRateFlexibility }, deficit, P);
+      expect(step.state.reserves).toBe(0);
+      expect(step.pegCollapsed).toBe(true);
+      // Thin reserves raise the risk premium, so capital leaves; it does not flow in.
+      expect(step.capitalFlow).toBeLessThan(0);
+      expect(step.capitalFlow).toBeGreaterThanOrEqual(-P.maxCapitalFlow);
+      // Lost reserves = held share × (current account + capital flow + exceptional financing).
+      expect(-drained.reserves * QUIET_INPUTS.importShare).toBeCloseTo(
+        (1 - exchangeRateFlexibility) * (-0.3 + step.capitalFlow + step.financingGap),
+        9,
+      );
+    }
+  });
+
+  it('balance of payments: under a peg, reserves move exactly with the external accounts', () => {
+    // The last plan loses all its reserves in the first month.
+    const drained = {
+      ...withPolicy(scenario('peg-open-capital'), { governmentRate: 0 }),
+      anchorRate: 0.3,
+      start: { ...scenario('peg-open-capital').start, reserves: 0.5 },
+    };
+    let financed = 0;
+    for (const plan of [scenario('peg-open-capital'), scenario('peg-closed-capital'), drained]) {
+      let reserves = plan.start.reserves;
+      for (const r of runScenario(plan)) {
+        expect((r.reserves - reserves) * plan.importShare).toBeCloseTo(
+          r.currentAccount + r.capitalFlow + r.financingGap,
+          9,
+        );
+        financed += r.financingGap;
+        reserves = r.reserves;
+        if (r.pegCollapsed) break; // from here on the currency floats
+      }
+    }
+    expect(financed).toBeGreaterThan(0);
+  });
+
+  it('a held currency that drifts to the edge of the band is realigned', () => {
+    // An undervalued peg in a deflation: the real exchange rate would drift further out.
+    const step = stepMacro(
+      { ...QUIET_STATE, realExchangeRate: P.maxRealExchangeRateDeviation },
+      PEG,
+      { ...QUIET_INPUTS, costPush: -0.2 },
+      P,
+    );
+    expect(step.state.inflation).toBeLessThan(QUIET_INPUTS.anchorInflation);
+    expect(step.state.realExchangeRate).toBe(P.maxRealExchangeRateDeviation);
+    expect(step.state.logExchangeRate).toBeLessThan(0); // revalued
   });
 
   it('debt accounting is exact: nothing is created or lost between the two stocks', () => {
@@ -444,8 +639,8 @@ describe('macro block: mechanisms', () => {
         adaptiveExpectation: between(0, 1.5),
         credibility: between(0.05, 1),
         reserves: between(0, 12),
-        domesticDebt: between(-0.2, 1.4),
-        foreignDebt: between(0, 0.8),
+        domesticDebt: between(0, 1.4),
+        foreignDebt: between(-0.5, 0.8),
         effectiveDebtRate: between(0, 0.4),
         marketExclusion: random() < 0.3 ? 10 : 0,
       };
@@ -465,73 +660,138 @@ describe('macro block: mechanisms', () => {
       };
       const step = stepMacro(state, policy, inputs, P);
       if (step.defaulted) continue;
+      const total = step.state.domesticDebt + step.state.foreignDebt;
       const growth = (step.state.inflation + inputs.potentialGrowth) / 12;
       const depreciation = step.state.logExchangeRate - state.logExchangeRate;
+      const premium = state.marketExclusion > 0 || state.foreignDebt < 0 ? 0 : step.riskPremium;
       const expected =
         state.domesticDebt * Math.exp(step.state.effectiveDebtRate / 12 - growth) +
-        state.foreignDebt *
-          Math.exp((inputs.anchorRate + step.riskPremium) / 12 - growth + depreciation) -
+        state.foreignDebt * Math.exp((inputs.anchorRate + premium) / 12 - growth + depreciation) -
         policy.primaryBalance / 12 -
         step.monetizedDeficit / 12;
-      expect(step.state.domesticDebt + step.state.foreignDebt).toBeCloseTo(expected, 12);
-      expect(step.state.foreignDebt).toBeGreaterThanOrEqual(0);
+      // In an exclusion, anything above the restructured level is written off as well.
+      const capped = state.marketExclusion > 0 ? Math.min(expected, RESTRUCTURED_DEBT) : expected;
+      expect(total).toBeCloseTo(capped, 12);
+      expect(step.state.domesticDebt).toBeGreaterThanOrEqual(0);
     }
   });
 
-  it('balance of payments: under a peg, reserves move exactly with the external accounts', () => {
-    for (const id of ['peg-open-capital', 'peg-closed-capital']) {
-      const plan = scenario(id);
-      let reserves = plan.start.reserves;
-      for (const r of runScenario(plan)) {
-        expect((r.reserves - reserves) * plan.importShare).toBeCloseTo(
-          r.currentAccount + r.capitalFlow + r.financingGap,
-          9,
-        );
-        reserves = r.reserves;
-        if (r.pegCollapsed) break; // from here on the currency floats
+  it('a default writes the debt down to the threshold less the haircut and shuts the market', () => {
+    const step = stepMacro(
+      { ...QUIET_STATE, domesticDebt: P.defaultDebtThreshold, foreignDebt: 0.2 },
+      BASE_POLICY,
+      QUIET_INPUTS,
+      P,
+    );
+    expect(step.defaulted).toBe(true);
+    expect(step.state.domesticDebt + step.state.foreignDebt).toBeCloseTo(RESTRUCTURED_DEBT, 12);
+    expect(step.state.marketExclusion).toBe(P.marketExclusionMonths);
+    expect(step.state.reputationPremium).toBe(P.defaultReputationPremium);
+  });
+
+  it('in market exclusion nothing is refinanced, a deficit is printed, and capital only leaves', () => {
+    const excluded: MacroState = {
+      ...QUIET_STATE,
+      marketExclusion: 12,
+      domesticDebt: 0.8,
+      foreignDebt: 0.1,
+      effectiveDebtRate: 0.4,
+      policyRate: 0.3,
+    };
+    const risky = { ...QUIET_INPUTS, politicalRiskPremium: 0.2 };
+    const balanced = stepMacro(excluded, BASE_POLICY, risky, P);
+    // The restructured debt is indexed and pays no premium: market rates do not reach it.
+    const worldRealRate = QUIET_INPUTS.anchorRate - QUIET_INPUTS.anchorInflation;
+    expect(balanced.state.domesticDebt).toBeCloseTo(
+      0.8 * Math.exp((worldRealRate - QUIET_INPUTS.potentialGrowth) / 12),
+      12,
+    );
+    expect(balanced.fiscalDeficit).toBeCloseTo(
+      0.8 * (balanced.state.inflation + worldRealRate) + 0.1 * QUIET_INPUTS.anchorRate,
+      12,
+    );
+    expect(balanced.monetizedDeficit).toBe(0);
+    expect(balanced.capitalFlow).toBeLessThanOrEqual(0);
+    // A primary deficit must be printed in full, even if the law says to borrow abroad.
+    const printing = (foreignBorrowingShare: number) =>
+      stepMacro(
+        excluded,
+        { ...BASE_POLICY, primaryBalance: -0.02, foreignBorrowingShare },
+        risky,
+        P,
+      );
+    expect(printing(1).monetizedDeficit).toBeCloseTo(0.02, 12);
+    expect(printing(1).state.foreignDebt).toBe(printing(0).state.foreignDebt);
+  });
+
+  it('until the market reopens, debt cannot climb back above its restructured level', () => {
+    // A falling currency pushes the debt even past the default threshold during the exclusion:
+    // the restructuring absorbs it, with no new default and no fresh start of the exclusion.
+    const step = stepMacro(
+      {
+        ...QUIET_STATE,
+        marketExclusion: 12,
+        reputationPremium: P.defaultReputationPremium / 2,
+        domesticDebt: P.defaultDebtThreshold + 0.3,
+      },
+      BASE_POLICY,
+      QUIET_INPUTS,
+      P,
+    );
+    expect(step.defaulted).toBe(false);
+    expect(step.state.marketExclusion).toBe(11);
+    expect(step.state.reputationPremium).toBeLessThan(P.defaultReputationPremium / 2);
+    expect(step.state.domesticDebt + step.state.foreignDebt).toBeCloseTo(RESTRUCTURED_DEBT, 12);
+  });
+
+  it('the reputation cost of a default outlasts the exclusion, halving every half-life', () => {
+    let state: MacroState = { ...QUIET_STATE, reputationPremium: P.defaultReputationPremium };
+    const fresh = stepMacro(state, BASE_POLICY, QUIET_INPUTS, P);
+    const clean = stepMacro(QUIET_STATE, BASE_POLICY, QUIET_INPUTS, P);
+    expect(fresh.riskPremium).toBeGreaterThan(clean.riskPremium + 0.5 * P.defaultReputationPremium);
+    for (let month = 0; month < P.reputationHalfLifeMonths; month++) {
+      state = stepMacro(state, BASE_POLICY, QUIET_INPUTS, P).state;
+    }
+    expect(state.reputationPremium).toBeCloseTo(P.defaultReputationPremium / 2, 12);
+  });
+
+  it('after a default foreign capital stays away for the whole exclusion', () => {
+    const r = runScenario({ ...scenario('debt-spiral'), months: 1200 });
+    const defaults = defaultMonths(r);
+    expect(defaults.length).toBeGreaterThan(1);
+    for (const month of defaults) {
+      for (const x of r.slice(month + 1, month + 1 + P.marketExclusionMonths)) {
+        expect(x.capitalFlow).toBeLessThanOrEqual(0);
       }
     }
   });
 
-  it('in market exclusion only the primary deficit is printed and nothing is borrowed', () => {
-    const excluded = {
-      ...QUIET_STATE,
-      marketExclusion: 12,
-      domesticDebt: 1,
-      effectiveDebtRate: 0.1,
-    };
-    // Interest on the defaulted debt is in arrears: it accrues but is not paid in cash.
-    const balanced = stepMacro(excluded, BASE_POLICY, QUIET_INPUTS, P);
-    expect(balanced.fiscalDeficit).toBeGreaterThan(0.05);
-    expect(balanced.monetizedDeficit).toBe(0);
-    expect(balanced.state.domesticDebt).toBeGreaterThan(1);
-    // A primary deficit must be printed in full, even if the law says to borrow abroad.
-    const deficit = stepMacro(
-      excluded,
-      { ...BASE_POLICY, primaryBalance: -0.02, foreignBorrowingShare: 1 },
-      QUIET_INPUTS,
-      P,
-    );
-    expect(deficit.monetizedDeficit).toBeCloseTo(0.02, 12);
-    expect(deficit.state.foreignDebt).toBe(0);
-  });
-
   it('the current account worsens when the economy overheats and improves after a real depreciation', () => {
-    const balanced = currentAccountAt(0, 0, D).currentAccount;
-    expect(currentAccountAt(0.03, 0, D).currentAccount).toBeLessThan(balanced);
-    expect(currentAccountAt(0, 0.2, D).currentAccount).toBeGreaterThan(balanced);
+    const balanced = currentAccountAt(0, 0, D);
+    expect(currentAccountAt(0.03, 0, D).currentAccount).toBeLessThan(balanced.currentAccount);
+    expect(currentAccountAt(0, 0.2, D).currentAccount).toBeGreaterThan(balanced.currentAccount);
+    // Near its limit the current account responds less to the exchange rate.
+    expect(currentAccountAt(0, 0.6, D).currentAccountSensitivity).toBeLessThan(
+      balanced.currentAccountSensitivity,
+    );
   });
 
-  it('after a default the market stays shut, and capital keeps leaving at first', () => {
-    const r = runScenario({ ...scenario('debt-spiral'), months: 1200 });
-    const defaults = r.flatMap((x) => (x.defaulted ? [x.month] : []));
-    expect(defaults.length).toBeGreaterThan(1);
-    for (let k = 1; k < defaults.length; k++) {
-      expect((defaults[k] ?? 0) - (defaults[k - 1] ?? 0)).toBeGreaterThan(P.marketExclusionMonths);
-    }
-    const first = defaults[0] ?? 0;
-    expect(at(r, first + 1).capitalFlow).toBeLessThan(0);
-    expect(at(r, first + 3).logExchangeRate).toBeGreaterThan(at(r, first).logExchangeRate);
+  it('shocks and policy changes take effect exactly in the months the scenario names', () => {
+    const plan = { ...scenario('baseline'), months: 30 };
+    const firstDifference = (
+      a: readonly MonthRecord[],
+      b: readonly MonthRecord[],
+      field: 'inflation' | 'debt',
+    ): number => a.findIndex((x, k) => x[field] !== b[k]?.[field]);
+    const shocked = (untilMonth: number): MonthRecord[] =>
+      runScenario({ ...plan, shocks: [{ fromMonth: 12, untilMonth, costPush: 0.05 }] });
+    expect(firstDifference(runScenario(plan), shocked(24), 'inflation')).toBe(12);
+    expect(firstDifference(shocked(24), shocked(25), 'inflation')).toBe(24);
+    const changed = runScenario({
+      ...plan,
+      policyChanges: [{ month: 12, policy: { primaryBalance: -0.05 } }],
+    });
+    expect(firstDifference(runScenario(plan), changed, 'debt')).toBe(12);
   });
 
   it('the exchange-rate solve stays stable however strongly trade responds', () => {
@@ -583,14 +843,23 @@ describe('macro block: mechanisms', () => {
 });
 
 describe('macro block: numerical safety over every documented range', () => {
-  it('rejects parameters and policies outside their documented ranges', () => {
-    expect(() => runScenario(scenario('baseline'), { ...P, phillipsSlope: 5 })).toThrow(RangeError);
-    expect(() =>
-      runScenario(withPolicy(scenario('baseline'), { exchangeRateFlexibility: 1.5 })),
-    ).toThrow(RangeError);
+  it('rejects parameters, policies and scenario inputs outside their documented ranges', () => {
+    const base = scenario('baseline');
+    const invalid: readonly MacroScenario[] = [
+      withPolicy(base, { exchangeRateFlexibility: 1.5 }),
+      { ...base, policyChanges: [{ month: 12, policy: { monetizedShare: 2 } }] },
+      { ...base, start: { ...base.start, credibility: 1.5 } },
+      { ...base, start: { ...base.start, reserves: -1 } },
+      { ...base, importShare: 0 },
+      { ...base, anchorRate: Number.NaN },
+      { ...base, shocks: [{ fromMonth: 0, untilMonth: 12, costPush: 0.5 }] },
+      { ...base, policyChanges: [{ month: 12.5, policy: { primaryBalance: -0.01 } }] },
+    ];
+    expect(() => runScenario(base, { ...P, phillipsSlope: 5 })).toThrow(RangeError);
+    for (const plan of invalid) expect(() => runScenario(plan)).toThrow(RangeError);
   });
 
-  it('stays exactly at a consistent steady state for any parameters', () => {
+  it('stays exactly at a consistent steady state for parameters drawn across their ranges', () => {
     const random = lcg(11);
     for (let i = 0; i < 25; i++) {
       const steady = steadyState(sampleParams(MACRO_PARAM_SPECS, random, 'uniform'), 0.03);
@@ -611,32 +880,40 @@ describe('macro block: numerical safety over every documented range', () => {
       for (let i = 0; i < 15; i++) {
         const macro = sampleParams(MACRO_PARAM_SPECS, random, sampling);
         const demand = sampleParams(DEMAND_PROXY_PARAM_SPECS, random, sampling);
-        const exclusion = Math.ceil(macro.marketExclusionMonths);
         for (const base of MACRO_SCENARIOS) {
-          const records = runScenario({ ...base, months: 1200 }, macro, demand);
-          let lastDefault = -Infinity;
-          const broken = records.find((r) => {
-            const excluded = r.month - lastDefault <= exclusion;
-            if (r.defaulted && excluded) return true; // defaults must be spaced by the exclusion
-            if (r.defaulted) lastDefault = r.month;
-            return (
-              Object.values(r).some((v) => typeof v === 'number' && !Number.isFinite(v)) ||
-              Math.abs(r.capitalFlow) > macro.maxCapitalFlow + 1e-9 ||
-              Math.abs(r.outputGap) > demand.maxOutputGap + 1e-9 ||
-              Math.abs(r.currentAccount) > demand.maxCurrentAccount + 1e-9 ||
-              r.inflation < macro.minInflation - 1e-9 ||
-              r.inflation > macro.maxInflation + 1e-9 ||
-              r.reserves < 0 ||
-              r.financingGap < 0 ||
-              (!excluded && r.debt > macro.defaultDebtThreshold + 1e-9)
+          // The scenario's own policy, and any policy the limits allow, changed once midway.
+          const plans: MacroScenario[] = [
+            { ...base, months: 1200 },
+            {
+              ...base,
+              months: 1200,
+              policy: samplePolicy(random),
+              policyChanges: [
+                ...base.policyChanges,
+                { month: 300 + Math.floor(random() * 600), policy: samplePolicy(random) },
+              ],
+            },
+          ];
+          for (const [k, plan] of plans.entries()) {
+            const records = runScenario(plan, macro, demand);
+            const where = `${base.id}, ${sampling} parameter set ${String(i)}, plan ${String(k)}`;
+            const broken = records.find(
+              (r) =>
+                Object.values(r).some((v) => typeof v === 'number' && !Number.isFinite(v)) ||
+                Math.abs(r.capitalFlow) > macro.maxCapitalFlow + 1e-9 ||
+                Math.abs(r.outputGap) > demand.maxOutputGap + 1e-9 ||
+                Math.abs(r.currentAccount) > demand.maxCurrentAccount + 1e-9 ||
+                r.inflation < macro.minInflation - 1e-9 ||
+                r.inflation > macro.maxInflation + 1e-9 ||
+                r.reserves < 0 ||
+                r.financingGap < 0 ||
+                r.debt > macro.defaultDebtThreshold + 1e-9,
             );
-          });
-          const where = `${base.id}, ${sampling} parameter set ${String(i)}`;
-          expect(broken, where).toBeUndefined();
-          // A period-2 or period-3 cycle reverses almost every month; slower cycles are economics.
-          expect(reversals(records.slice(-121)), where).toBeLessThanOrEqual(40);
+            expect(broken, where).toBeUndefined();
+            expect(maxReversalsPerDecade(records), where).toBeLessThanOrEqual(40);
+          }
         }
       }
     }
-  });
+  }, 60_000);
 });

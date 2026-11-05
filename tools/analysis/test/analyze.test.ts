@@ -25,7 +25,8 @@ describe('project static analysis', () => {
 
   it('flags functions that only forward their arguments, in any syntactic shape', () => {
     expect(flagged('pass-through')).toEqual([
-      'alias', // a renamed method; the arrow field that binds `this` is exempt
+      'alias', // a renamed method; the arrow fields that bind `this` are exempt
+      'area', // the static Square.area; the instance one overrides its base and is exempt
       'awaited',
       'cast',
       'discarded',

@@ -1,4 +1,4 @@
-import { api, Handlers, makePoint, Rect, Runner, type Shape } from './sample.ts';
+import { api, Handlers, makePoint, Panel, Rect, Runner, type Shape } from './sample.ts';
 
 const shape: Shape = new Rect();
 export const results = [
@@ -7,4 +7,5 @@ export const results = [
   makePoint(1).x,
   shape.area(1, 2),
   new Handlers().bound(1),
+  new Panel().onChange(1),
 ];

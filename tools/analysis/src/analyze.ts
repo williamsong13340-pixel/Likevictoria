@@ -4,10 +4,12 @@
 //    property's own next value, and type-level uses do not count), i.e. data with no effect;
 //  - pass-through: a named function whose whole body forwards its parameters unchanged to
 //    another function or constructor, i.e. an abstraction that adds nothing. Exempt: arrow
-//    functions that call a method of `this` (they bind it), and members a base class or an
+//    functions that call a method reached through `this` (they bind it), wrappers that await a
+//    plain value or discard a promise (they change the type), and members a base class or an
 //    implemented interface requires.
 // Known gaps: local variables that are written but never read are left to TypeScript's
-// noUnusedLocals, and reads through computed keys (`table[key]`) count for every member.
+// noUnusedLocals; an interface member read only through a computed key (`table[key]`) is
+// reported as unread, while an object constant with any computed read is not checked at all.
 import { dirname, relative } from 'node:path';
 import ts from 'typescript';
 
@@ -146,8 +148,18 @@ function unwrap(expression: ts.Expression): ts.Expression {
   return e;
 }
 
+const isThenable = (checker: ts.TypeChecker, node: ts.Node): boolean =>
+  checker.getTypeAtLocation(node).getProperty('then') !== undefined;
+
+/** The object at the start of a chain like `this.service.handle`. */
+function rootOf(expression: ts.Expression): ts.Expression {
+  let e = expression;
+  while (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) e = e.expression;
+  return e;
+}
+
 /** The callee if `fn` only forwards its parameters, in order and unchanged, to one call. */
-function forwardedCallee(fn: ts.SignatureDeclaration): string | undefined {
+function forwardedCallee(fn: ts.SignatureDeclaration, checker: ts.TypeChecker): string | undefined {
   if (!('body' in fn)) return undefined;
   const body = fn.body;
   if (body === undefined) return undefined;
@@ -160,16 +172,22 @@ function forwardedCallee(fn: ts.SignatureDeclaration): string | undefined {
   }
   if (expression === undefined) return undefined;
   let call = unwrap(expression);
-  // Awaiting the result or discarding it does not change what the function does.
-  while (ts.isAwaitExpression(call) || ts.isVoidExpression(call)) call = unwrap(call.expression);
+  // Awaiting a promise or discarding a plain value changes nothing; awaiting a plain value turns
+  // the result into a promise, and discarding a promise is what a callback must do with one.
+  for (;;) {
+    if (ts.isAwaitExpression(call) && isThenable(checker, call.expression)) {
+      call = unwrap(call.expression);
+    } else if (ts.isVoidExpression(call) && !isThenable(checker, call.expression)) {
+      call = unwrap(call.expression);
+    } else {
+      break;
+    }
+  }
   if (!ts.isCallExpression(call) && !ts.isNewExpression(call)) return undefined;
-  // An arrow function that calls a method of `this` binds it, e.g. a handler stored in a field.
+  // An arrow function that calls a method reached through `this` binds the receiver, as a
+  // handler stored in a field must.
   const callee = call.expression;
-  if (
-    ts.isArrowFunction(fn) &&
-    (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) &&
-    callee.expression.kind === ts.SyntaxKind.ThisKeyword
-  ) {
+  if (ts.isArrowFunction(fn) && rootOf(callee).kind === ts.SyntaxKind.ThisKeyword) {
     return undefined;
   }
   const args = call.arguments ?? [];
@@ -209,7 +227,10 @@ function functionName(node: ts.Node): string | undefined {
   return undefined;
 }
 
-/** Whether a base class or an implemented interface requires this class member to exist. */
+/**
+ * Whether a base class or an implemented interface requires this class member to exist. A static
+ * member can only be required by the static side of a base class.
+ */
 function satisfiesContract(node: ts.Node, checker: ts.TypeChecker): boolean {
   const member = ts.isMethodDeclaration(node)
     ? node
@@ -217,12 +238,25 @@ function satisfiesContract(node: ts.Node, checker: ts.TypeChecker): boolean {
       ? node.parent
       : undefined;
   if (member === undefined || !ts.isClassLike(member.parent)) return false;
-  const name = checker.getSymbolAtLocation(member.name)?.getName();
-  if (name === undefined) return false;
-  return (member.parent.heritageClauses ?? []).some((clause) =>
-    clause.types.some(
-      (base) => checker.getPropertyOfType(checker.getTypeAtLocation(base), name) !== undefined,
-    ),
+  const owner = member.parent;
+  const isStatic = (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Static) !== 0;
+  // The member's own symbol, found through the class type so that computed names work too.
+  const instanceType = checker.getTypeAtLocation(owner);
+  const classSymbol = instanceType.getSymbol();
+  const ownType =
+    isStatic && classSymbol !== undefined
+      ? checker.getTypeOfSymbolAtLocation(classSymbol, owner)
+      : instanceType;
+  const own = ownType.getProperties().find((property) => property.declarations?.includes(member));
+  if (own === undefined) return false;
+  return (owner.heritageClauses ?? []).some(
+    (clause) =>
+      (!isStatic || clause.token === ts.SyntaxKind.ExtendsKeyword) &&
+      clause.types.some((base) =>
+        checker
+          .getPropertiesOfType(checker.getTypeAtLocation(isStatic ? base.expression : base))
+          .some((property) => property.escapedName === own.escapedName),
+      ),
   );
 }
 
@@ -304,7 +338,7 @@ export function analyzeProject(tsconfigPath: string): Finding[] {
     if (ts.isVariableDeclaration(node)) checkObjectConstant(node);
     if (ts.isFunctionLike(node) && !satisfiesContract(node, checker)) {
       const name = functionName(node);
-      const callee = forwardedCallee(node);
+      const callee = forwardedCallee(node, checker);
       if (name !== undefined && callee !== undefined) {
         report(
           node,

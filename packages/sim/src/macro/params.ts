@@ -19,6 +19,7 @@ export interface MacroParams {
   readonly passThroughHalfLifeMonths: number;
   readonly monetizationInflation: number;
   readonly moneyFlightSemiElasticity: number;
+  readonly minMoneyDemand: number;
   readonly minInflation: number;
   readonly maxInflation: number;
   readonly neutralRealRate: number;
@@ -45,6 +46,7 @@ export interface MacroParams {
   readonly defaultHaircut: number;
   readonly marketExclusionMonths: number;
   readonly defaultReputationPremium: number;
+  readonly reputationHalfLifeMonths: number;
 }
 
 export const DEFAULT_MACRO_PARAMS: MacroParams = {
@@ -60,6 +62,7 @@ export const DEFAULT_MACRO_PARAMS: MacroParams = {
   passThroughHalfLifeMonths: 3,
   monetizationInflation: 6,
   moneyFlightSemiElasticity: 2,
+  minMoneyDemand: 0.02,
   minInflation: -0.2,
   maxInflation: 20,
   neutralRealRate: 0.02,
@@ -86,12 +89,13 @@ export const DEFAULT_MACRO_PARAMS: MacroParams = {
   defaultHaircut: 0.5,
   marketExclusionMonths: 36,
   defaultReputationPremium: 0.08,
+  reputationHalfLifeMonths: 36,
 };
 
 export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   expectationHalfLifeMonths: {
     unit: '月',
-    min: 1,
+    min: 3,
     max: 60,
     meaning: '适应性预期的记忆：通胀为零时，民众用多久把预期向实际通胀调整一半',
   },
@@ -160,6 +164,13 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
     min: 0,
     max: 10,
     meaning: '卡甘半弹性：预期通胀越高，人们越不愿持有货币，同样的印钞带来更高通胀',
+  },
+  minMoneyDemand: {
+    unit: '比例',
+    min: 0.005,
+    max: 0.2,
+    meaning:
+      '无论通胀多高，人们仍会持有的实际货币量（相对正常水平）：只有大量印钞才能维持恶性通胀，零星印钞不能',
   },
   minInflation: {
     unit: '年率',
@@ -236,14 +247,14 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   maxRealExchangeRateDeviation: {
     unit: '对数',
     min: 0.5,
-    max: 3,
+    max: 1.5,
     meaning:
       '实际汇率偏离均衡的上限（1.5 约为 4.5 倍）：超过之后人们改用外币，而不是继续抛售本币资产',
   },
   pegCrisisReserveMonths: {
     unit: '月进口额',
     min: 0.25,
-    max: 6,
+    max: 2,
     meaning: '外汇储备降到多少个月进口额时，钉住汇率崩溃',
   },
   devaluationSize: {
@@ -266,7 +277,7 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   },
   safeReserveMonths: {
     unit: '月进口额',
-    min: 0.5,
+    min: 2,
     max: 12,
     meaning: '外汇储备高于此水平时没有储备风险溢价',
   },
@@ -310,12 +321,19 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
     unit: '月',
     min: 6,
     max: 120,
-    meaning: '违约后无法借款的时长：期间赤字只能靠印钞弥补，也不会再次违约',
+    meaning:
+      '违约后无法借款的时长：期间基本赤字只能靠印钞弥补，重组后的债务不再随市场利率重新定价，外国资本不进入，也不会再次违约',
   },
   defaultReputationPremium: {
     unit: '年率',
     min: 0,
     max: 0.3,
-    meaning: '违约刚发生时的声誉溢价，随市场排斥期结束逐步消失：违约后资本不会马上回流',
+    meaning: '违约刚发生时的声誉溢价：市场重新开放后，借钱仍比违约前贵',
+  },
+  reputationHalfLifeMonths: {
+    unit: '月',
+    min: 6,
+    max: 240,
+    meaning: '违约的声誉溢价每过多少个月减半',
   },
 };
