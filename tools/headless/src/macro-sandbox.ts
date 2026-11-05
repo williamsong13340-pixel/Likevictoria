@@ -32,19 +32,21 @@ function withOverrides<T extends { readonly [K in keyof T]: number }>(
 ): T {
   const result: Record<string, number> = { ...defaults };
   for (const [name, value] of overrides) {
-    if (name in specs) result[name] = value;
+    if (Object.hasOwn(specs, name)) result[name] = value;
   }
   return result as T;
 }
 
 const overrides = new Map<string, number>();
 for (const assignment of values.set) {
-  const [name = '', text = ''] = assignment.split('=');
+  const [name = '', text = '', ...extra] = assignment.split('=');
   const value = Number(text);
-  if (!(name in MACRO_PARAM_SPECS) && !(name in DEMAND_PROXY_PARAM_SPECS)) {
+  if (!Object.hasOwn(MACRO_PARAM_SPECS, name) && !Object.hasOwn(DEMAND_PROXY_PARAM_SPECS, name)) {
     throw new Error(`未知参数 ${name}；运行 pnpm macro --params 查看全部参数`);
   }
-  if (text === '' || !Number.isFinite(value)) throw new Error(`参数 ${name} 的值不是数字：${text}`);
+  if (text === '' || extra.length > 0 || !Number.isFinite(value)) {
+    throw new Error(`参数 ${name} 的值不是一个数字：${assignment}`);
+  }
   overrides.set(name, value);
 }
 const macroParams = withOverrides(DEFAULT_MACRO_PARAMS, MACRO_PARAM_SPECS, overrides);
@@ -78,6 +80,7 @@ const COLUMNS: readonly Column[] = [
   ['缺口', (r) => share(r.outputGap)],
   ['经常账户', (r) => share(r.currentAccount)],
   ['资本流动', (r) => share(r.capitalFlow)],
+  ['融资缺口', (r) => share(r.financingGap)],
   ['储备(月)', (r) => r.reserves.toFixed(1)],
   ['汇率', (r) => level(r.logExchangeRate)],
   ['债务', (r) => share(r.debt)],

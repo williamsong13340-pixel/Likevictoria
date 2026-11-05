@@ -1,4 +1,4 @@
-import { validateParams } from '../params.ts';
+import { validateParams, type ParamSpecs } from '../params.ts';
 import {
   currentAccountAt,
   DEFAULT_DEMAND_PROXY_PARAMS,
@@ -14,6 +14,25 @@ import {
   type MacroStart,
 } from './model.ts';
 import { DEFAULT_MACRO_PARAMS, MACRO_PARAM_SPECS, type MacroParams } from './params.ts';
+
+type PolicyNumbers = Omit<MacroPolicy, 'independentCentralBank'>;
+
+/** Valid ranges of policy settings, which laws and scenarios supply as data. */
+const POLICY_LIMITS: ParamSpecs<PolicyNumbers> = {
+  exchangeRateFlexibility: {
+    unit: '0—1',
+    min: 0,
+    max: 1,
+    meaning: '汇率灵活度：0 为钉住，1 为自由浮动',
+  },
+  capitalMobility: { unit: 'GDP比例/利差', min: 0, max: 50, meaning: '资本流动性' },
+  baseCredibility: { unit: '0—1', min: 0, max: 1, meaning: '央行法律地位决定的基础信誉' },
+  inflationTarget: { unit: '年率', min: -0.02, max: 0.2, meaning: '通胀目标' },
+  governmentRate: { unit: '年率', min: -0.05, max: 1, meaning: '政府设定的政策利率' },
+  primaryBalance: { unit: 'GDP比例', min: -0.2, max: 0.2, meaning: '基本财政盈余' },
+  monetizedShare: { unit: '比例', min: 0, max: 1, meaning: '由央行印钞弥补的赤字比例' },
+  foreignBorrowingShare: { unit: '比例', min: 0, max: 1, meaning: '新借款中外币的比例' },
+};
 
 /** A temporary shock, active for months in [fromMonth, untilMonth). */
 interface ScenarioShock {
@@ -36,7 +55,6 @@ export interface MacroScenario {
   readonly lesson: string;
   readonly months: number;
   readonly start: MacroStart;
-  readonly initialOutputGap: number;
   readonly policy: MacroPolicy;
   readonly policyChanges: readonly ScenarioPolicyChange[];
   readonly shocks: readonly ScenarioShock[];
@@ -44,7 +62,6 @@ export interface MacroScenario {
   readonly anchorInflation: number;
   readonly potentialGrowth: number;
   readonly importShare: number;
-  readonly baselineCurrentAccount: number;
   readonly politicalRiskPremium: number;
 }
 
@@ -58,6 +75,7 @@ export interface MonthRecord {
   readonly outputGap: number;
   readonly currentAccount: number;
   readonly capitalFlow: number;
+  readonly financingGap: number;
   readonly reserves: number;
   readonly logExchangeRate: number;
   readonly debt: number;
@@ -80,12 +98,8 @@ export function runScenario(
   validateParams(demandParams, DEMAND_PROXY_PARAM_SPECS);
 
   let policy = scenario.policy;
-  let demand = currentAccountAt(
-    scenario.initialOutputGap,
-    0,
-    scenario.baselineCurrentAccount,
-    demandParams,
-  );
+  validateParams<PolicyNumbers>(policy, POLICY_LIMITS);
+  let demand = currentAccountAt(0, 0, demandParams);
   const inputsFor = (costPush: number): MacroInputs => ({
     outputGap: demand.outputGap,
     potentialGrowth: scenario.potentialGrowth,
@@ -102,7 +116,10 @@ export function runScenario(
 
   for (let month = 0; month < scenario.months; month++) {
     for (const change of scenario.policyChanges) {
-      if (change.month === month) policy = { ...policy, ...change.policy };
+      if (change.month === month) {
+        policy = { ...policy, ...change.policy };
+        validateParams<PolicyNumbers>(policy, POLICY_LIMITS);
+      }
     }
     let costPush = 0;
     let demandShock = 0;
@@ -127,6 +144,7 @@ export function runScenario(
       outputGap: demand.outputGap,
       currentAccount: demand.currentAccount,
       capitalFlow: step.capitalFlow,
+      financingGap: step.financingGap,
       reserves: state.reserves,
       logExchangeRate: state.logExchangeRate,
       debt: state.domesticDebt + state.foreignDebt,
@@ -149,8 +167,8 @@ export function runScenario(
         costPush,
         demandShock,
         inflation: state.inflation,
+        inflationTarget: policy.inflationTarget,
         realExchangeRate: state.realExchangeRate,
-        baselineCurrentAccount: scenario.baselineCurrentAccount,
       },
       demandParams,
     );

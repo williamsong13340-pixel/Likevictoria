@@ -1,4 +1,4 @@
-import { approach } from '../math.ts';
+import { approach, logCosh } from '../math.ts';
 import type { ParamSpecs } from '../params.ts';
 
 /**
@@ -10,6 +10,7 @@ export interface DemandProxyParams {
   readonly gapHalfLifeMonths: number;
   readonly maxOutputGap: number;
   readonly realRateSensitivity: number;
+  readonly realRateSaturation: number;
   readonly fiscalMultiplier: number;
   readonly supplyShockOutputLoss: number;
   readonly inflationOutputCost: number;
@@ -22,6 +23,7 @@ export const DEFAULT_DEMAND_PROXY_PARAMS: DemandProxyParams = {
   gapHalfLifeMonths: 6,
   maxOutputGap: 0.12,
   realRateSensitivity: 0.5,
+  realRateSaturation: 0.1,
   fiscalMultiplier: 0.8,
   supplyShockOutputLoss: 0.3,
   inflationOutputCost: 0.05,
@@ -33,7 +35,7 @@ export const DEFAULT_DEMAND_PROXY_PARAMS: DemandProxyParams = {
 export const DEMAND_PROXY_PARAM_SPECS: ParamSpecs<DemandProxyParams> = {
   gapHalfLifeMonths: {
     unit: '月',
-    min: 1,
+    min: 2,
     max: 36,
     meaning: '产出缺口向目标值收敛的半衰期',
   },
@@ -46,9 +48,16 @@ export const DEMAND_PROXY_PARAM_SPECS: ParamSpecs<DemandProxyParams> = {
   realRateSensitivity: {
     unit: '缺口/利率',
     min: 0,
-    max: 3,
+    max: 1.5,
     meaning:
       '私人借贷成本（实际利率 + 风险溢价）每高于中性利率 1 个百分点，产出缺口下降多少个百分点',
+  },
+  realRateSaturation: {
+    unit: '年率',
+    min: 0.02,
+    max: 0.3,
+    meaning:
+      '实际借贷成本偏离中性超过这个幅度后，对需求的影响不再增加（例如恶性通胀时极负的实际利率不会无限刺激需求）',
   },
   fiscalMultiplier: {
     unit: '缺口/(GDP比例)',
@@ -63,10 +72,11 @@ export const DEMAND_PROXY_PARAM_SPECS: ParamSpecs<DemandProxyParams> = {
     meaning: '成本冲击（如油价）每带来 1 个百分点通胀，产出缺口下降多少个百分点',
   },
   inflationOutputCost: {
-    unit: '缺口/通胀²',
-    min: 0,
+    unit: '缺口/通胀偏离',
+    min: 0.02,
     max: 1,
-    meaning: '高通胀的产出代价（扭曲价格信号、破坏合同）：缺口下降 系数 × 通胀²',
+    meaning:
+      '通胀偏离目标的产出代价（扭曲价格信号、破坏合同）：小偏离时约为 系数 × 偏离²/2，大偏离时约为 系数 × 偏离',
   },
   importPropensity: {
     unit: '经常账户/缺口',
@@ -84,7 +94,7 @@ export const DEMAND_PROXY_PARAM_SPECS: ParamSpecs<DemandProxyParams> = {
     unit: 'GDP比例',
     min: 0.02,
     max: 0.5,
-    meaning: '经常账户相对基准值的饱和上限',
+    meaning: '经常账户的饱和上限（占GDP）',
   },
 };
 
@@ -103,16 +113,15 @@ export interface DemandProxyDrivers {
   readonly costPush: number;
   readonly demandShock: number;
   readonly inflation: number;
+  readonly inflationTarget: number;
   /** Log real exchange rate relative to equilibrium; positive means undervalued. */
   readonly realExchangeRate: number;
-  readonly baselineCurrentAccount: number;
 }
 
 /** Current account for a given output gap and real exchange rate, with its local slope. */
 export function currentAccountAt(
   outputGap: number,
   realExchangeRate: number,
-  baselineCurrentAccount: number,
   p: DemandProxyParams,
 ): DemandProxyState {
   const pressure = Math.tanh(
@@ -120,7 +129,7 @@ export function currentAccountAt(
   );
   return {
     outputGap,
-    currentAccount: baselineCurrentAccount + p.maxCurrentAccount * pressure,
+    currentAccount: p.maxCurrentAccount * pressure,
     currentAccountSensitivity: p.tradeElasticity * (1 - pressure * pressure),
   };
 }
@@ -130,14 +139,18 @@ export function stepDemandProxy(
   d: DemandProxyDrivers,
   p: DemandProxyParams,
 ): DemandProxyState {
-  // Private borrowers pay the sovereign risk premium too.
+  // Private borrowers pay the sovereign risk premium too; the rate channel saturates, and
+  // inflation away from target costs output with a bounded slope.
+  const borrowingCost = d.realRate + d.riskPremium - d.neutralRealRate;
   const impulse =
-    -p.realRateSensitivity * (d.realRate + d.riskPremium - d.neutralRealRate) -
+    -p.realRateSensitivity *
+      p.realRateSaturation *
+      Math.tanh(borrowingCost / p.realRateSaturation) -
     p.fiscalMultiplier * d.primaryBalance -
     p.supplyShockOutputLoss * d.costPush -
-    p.inflationOutputCost * d.inflation ** 2 +
+    p.inflationOutputCost * logCosh(d.inflation - d.inflationTarget) +
     d.demandShock;
   const gapTarget = p.maxOutputGap * Math.tanh(impulse / p.maxOutputGap);
   const outputGap = approach(state.outputGap, gapTarget, p.gapHalfLifeMonths);
-  return currentAccountAt(outputGap, d.realExchangeRate, d.baselineCurrentAccount, p);
+  return currentAccountAt(outputGap, d.realExchangeRate, p);
 }

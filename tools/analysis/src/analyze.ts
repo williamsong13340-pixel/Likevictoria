@@ -3,7 +3,11 @@
 //    that production code writes but never reads (reads in tests, reads that only compute the
 //    property's own next value, and type-level uses do not count), i.e. data with no effect;
 //  - pass-through: a named function whose whole body forwards its parameters unchanged to
-//    another function or constructor, i.e. an abstraction that adds nothing.
+//    another function or constructor, i.e. an abstraction that adds nothing. Exempt: arrow
+//    functions that call a method of `this` (they bind it), and members a base class or an
+//    implemented interface requires.
+// Known gaps: local variables that are written but never read are left to TypeScript's
+// noUnusedLocals, and reads through computed keys (`table[key]`) count for every member.
 import { dirname, relative } from 'node:path';
 import ts from 'typescript';
 
@@ -143,7 +147,8 @@ function unwrap(expression: ts.Expression): ts.Expression {
 }
 
 /** The callee if `fn` only forwards its parameters, in order and unchanged, to one call. */
-function forwardedCallee(fn: ts.FunctionLikeDeclaration): string | undefined {
+function forwardedCallee(fn: ts.SignatureDeclaration): string | undefined {
+  if (!('body' in fn)) return undefined;
   const body = fn.body;
   if (body === undefined) return undefined;
   let expression: ts.Expression | undefined = ts.isBlock(body) ? undefined : body;
@@ -154,8 +159,19 @@ function forwardedCallee(fn: ts.FunctionLikeDeclaration): string | undefined {
     }
   }
   if (expression === undefined) return undefined;
-  const call = unwrap(expression);
+  let call = unwrap(expression);
+  // Awaiting the result or discarding it does not change what the function does.
+  while (ts.isAwaitExpression(call) || ts.isVoidExpression(call)) call = unwrap(call.expression);
   if (!ts.isCallExpression(call) && !ts.isNewExpression(call)) return undefined;
+  // An arrow function that calls a method of `this` binds it, e.g. a handler stored in a field.
+  const callee = call.expression;
+  if (
+    ts.isArrowFunction(fn) &&
+    (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) &&
+    callee.expression.kind === ts.SyntaxKind.ThisKeyword
+  ) {
+    return undefined;
+  }
   const args = call.arguments ?? [];
   if (args.length !== fn.parameters.length) return undefined;
   const forwardsAll = fn.parameters.every((param, i) => {
@@ -173,8 +189,7 @@ function forwardedCallee(fn: ts.FunctionLikeDeclaration): string | undefined {
     return ts.isIdentifier(arg) && arg.text === param.name.text;
   });
   if (!forwardsAll) return undefined;
-  const callee = call.expression.getText();
-  return ts.isNewExpression(call) ? `new ${callee}` : callee;
+  return ts.isNewExpression(call) ? `new ${callee.getText()}` : callee.getText();
 }
 
 function functionName(node: ts.Node): string | undefined {
@@ -194,14 +209,21 @@ function functionName(node: ts.Node): string | undefined {
   return undefined;
 }
 
-/** Methods of classes that implement or extend something may exist to satisfy a contract. */
-function satisfiesContract(node: ts.Node): boolean {
-  const owner = ts.isMethodDeclaration(node)
-    ? node.parent
+/** Whether a base class or an implemented interface requires this class member to exist. */
+function satisfiesContract(node: ts.Node, checker: ts.TypeChecker): boolean {
+  const member = ts.isMethodDeclaration(node)
+    ? node
     : ts.isPropertyDeclaration(node.parent)
-      ? node.parent.parent
+      ? node.parent
       : undefined;
-  return owner !== undefined && ts.isClassLike(owner) && (owner.heritageClauses?.length ?? 0) > 0;
+  if (member === undefined || !ts.isClassLike(member.parent)) return false;
+  const name = checker.getSymbolAtLocation(member.name)?.getName();
+  if (name === undefined) return false;
+  return (member.parent.heritageClauses ?? []).some((clause) =>
+    clause.types.some(
+      (base) => checker.getPropertyOfType(checker.getTypeAtLocation(base), name) !== undefined,
+    ),
+  );
 }
 
 export function analyzeProject(tsconfigPath: string): Finding[] {
@@ -209,6 +231,7 @@ export function analyzeProject(tsconfigPath: string): Finding[] {
   const { service, files } = createService(tsconfigPath);
   const program = service.getProgram();
   if (program === undefined) throw new Error('TypeScript program could not be created');
+  const checker = program.getTypeChecker();
   const isTest = (fileName: string): boolean => TEST_PATH.test(relative(root, fileName));
   const findings: Finding[] = [];
 
@@ -279,7 +302,7 @@ export function analyzeProject(tsconfigPath: string): Finding[] {
       reportUnread(node, containerName(node), node.name);
     }
     if (ts.isVariableDeclaration(node)) checkObjectConstant(node);
-    if (ts.isFunctionLike(node) && 'body' in node && !satisfiesContract(node)) {
+    if (ts.isFunctionLike(node) && !satisfiesContract(node, checker)) {
       const name = functionName(node);
       const callee = forwardedCallee(node);
       if (name !== undefined && callee !== undefined) {

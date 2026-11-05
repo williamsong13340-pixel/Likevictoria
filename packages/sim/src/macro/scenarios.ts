@@ -37,7 +37,6 @@ const BASELINE: MacroScenario = {
   lesson: '没有冲击时，通胀停在目标、产出缺口为零、债务率稳定：模型自身不会漂移。',
   months: 120,
   start: STEADY_START,
-  initialOutputGap: 0,
   policy: BASE_POLICY,
   policyChanges: [],
   shocks: [],
@@ -45,7 +44,6 @@ const BASELINE: MacroScenario = {
   anchorInflation: 0.03,
   potentialGrowth: 0.03,
   importShare: 0.25,
-  baselineCurrentAccount: 0,
   politicalRiskPremium: 0,
 };
 
@@ -56,7 +54,6 @@ const RATE_CUT_UNDER_PEG: MacroPolicy = {
   ...GOVERNMENT_CB,
   exchangeRateFlexibility: PEG,
   governmentRate: 0.02,
-  foreignBorrowingShare: 0.4,
 };
 const MISMATCHED_DEBT: MacroStart = { ...STEADY_START, domesticDebt: 0.3, foreignDebt: 0.2 };
 
@@ -85,7 +82,7 @@ export const MACRO_SCENARIOS: readonly MacroScenario[] = [
     id: 'oil-shock-unanchored',
     title: '石油冲击：预期失锚',
     lesson:
-      '同样的冲击，但央行信誉低、政府把利率固定不动：预期随通胀上升，实际利率转负，通胀长期停在高位（预期失锚、违反泰勒原则）。',
+      '同样的冲击，但央行信誉低、政府把利率固定不动：预期随通胀上升，实际利率转负、经济过热，通胀长期停在 9% 左右，第 5 年后还在缓慢上升（预期失锚、违反泰勒原则）。',
     months: 96,
     start: { ...STEADY_START, credibility: 0.3 },
     policy: { ...BASE_POLICY, ...GOVERNMENT_CB },
@@ -167,7 +164,7 @@ export const MACRO_SCENARIOS: readonly MacroScenario[] = [
     id: 'debt-spiral',
     title: '债务螺旋',
     lesson:
-      '高债务 + 基本赤字 + 政治风险：风险溢价随债务上升，私人借贷成本跟着上升，经济转入衰退；资本外流使本币贬值、外币债务膨胀，债务率加速上升，最终违约减记；赤字不改，债务会再次累积（连续违约）。',
+      '高债务 + 基本赤字 + 政治风险：风险溢价随债务上升，私人借贷成本跟着上升，经济转入衰退；资本外流使本币贬值、外币债务膨胀，债务率加速上升，第 6 年违约减记。之后三年被市场排斥，基本赤字只能印钞，通胀升到 20% 左右，信誉大跌；排斥结束、停止印钞后通胀回落，但赤字不改，债务又一路累积，第 15 年接近再次违约。',
     months: 180,
     start: { ...STEADY_START, domesticDebt: 0.7, foreignDebt: 0.3 },
     policy: { ...BASE_POLICY, primaryBalance: -0.03, foreignBorrowingShare: 0.3 },

@@ -43,6 +43,8 @@ export interface MacroParams {
   readonly debtRepricingHalfLifeMonths: number;
   readonly defaultDebtThreshold: number;
   readonly defaultHaircut: number;
+  readonly marketExclusionMonths: number;
+  readonly defaultReputationPremium: number;
 }
 
 export const DEFAULT_MACRO_PARAMS: MacroParams = {
@@ -82,6 +84,8 @@ export const DEFAULT_MACRO_PARAMS: MacroParams = {
   debtRepricingHalfLifeMonths: 36,
   defaultDebtThreshold: 2,
   defaultHaircut: 0.5,
+  marketExclusionMonths: 36,
+  defaultReputationPremium: 0.08,
 };
 
 export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
@@ -141,7 +145,7 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   },
   passThroughHalfLifeMonths: {
     unit: '月',
-    min: 0.5,
+    min: 1,
     max: 24,
     meaning: '汇率传导的半衰期：进口价格变化需要多久才有一半传到消费物价',
   },
@@ -184,7 +188,7 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   ruleGapWeight: {
     unit: '系数',
     min: 0,
-    max: 3,
+    max: 1.5,
     meaning: '利率规则对产出缺口的反应',
   },
   maxRuleAdjustment: {
@@ -195,7 +199,7 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   },
   policyRateHalfLifeMonths: {
     unit: '月',
-    min: 0.5,
+    min: 1,
     max: 24,
     meaning: '央行调整利率的平滑程度',
   },
@@ -251,13 +255,13 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   safeDebt: {
     unit: 'GDP比例',
     min: 0,
-    max: 3,
-    meaning: '政府债务低于此水平时没有债务风险溢价',
+    max: 1.5,
+    meaning: '政府债务低于此水平时没有债务风险溢价（范围与违约阈值不重叠）',
   },
   debtPremiumSlope: {
     unit: '利率/债务²',
     min: 0,
-    max: 1,
+    max: 0.5,
     meaning: '债务风险溢价的凸性：溢价 = 斜率 ×（债务 − 安全水平）²，再经饱和',
   },
   safeReserveMonths: {
@@ -275,7 +279,7 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   maxRiskPremium: {
     unit: '年率',
     min: 0.02,
-    max: 1,
+    max: 0.5,
     meaning: '风险溢价的饱和上限',
   },
   termPremium: {
@@ -292,14 +296,26 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   },
   defaultDebtThreshold: {
     unit: 'GDP比例',
-    min: 0.5,
+    min: 1.5,
     max: 5,
     meaning: '政府债务超过此水平时违约',
   },
   defaultHaircut: {
     unit: '比例',
-    min: 0.1,
+    min: 0.3,
     max: 0.9,
-    meaning: '违约时债务被减记的比例',
+    meaning: '违约重组时的减记比例：债务被减到"阈值 ×（1 − 比例）"',
+  },
+  marketExclusionMonths: {
+    unit: '月',
+    min: 6,
+    max: 120,
+    meaning: '违约后无法借款的时长：期间赤字只能靠印钞弥补，也不会再次违约',
+  },
+  defaultReputationPremium: {
+    unit: '年率',
+    min: 0,
+    max: 0.3,
+    meaning: '违约刚发生时的声誉溢价，随市场排斥期结束逐步消失：违约后资本不会马上回流',
   },
 };

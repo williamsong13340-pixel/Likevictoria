@@ -94,3 +94,40 @@ export class Rect implements Shape {
     return add(w, h);
   }
 }
+
+// Awaiting or discarding the result still only forwards.
+async function fetchValue(a: number): Promise<number> {
+  return Promise.resolve(a + 1);
+}
+export async function awaited(a: number): Promise<number> {
+  return await fetchValue(a);
+}
+export function discarded(a: number, b: number): void {
+  void add(a, b);
+}
+
+// A method that renames another forwards; an arrow field that binds `this` does not.
+export class Handlers {
+  private handle(a: number): number {
+    return a * 2;
+  }
+  alias(a: number): number {
+    return this.handle(a);
+  }
+  bound = (a: number): number => this.handle(a);
+}
+
+// Only the members a base class or an interface requires are exempt.
+class Base {
+  area(w: number, h: number): number {
+    return w * h;
+  }
+}
+export class Square extends Base {
+  override area(w: number, h: number): number {
+    return add(w, h);
+  }
+  helper(a: number, b: number): number {
+    return add(a, b);
+  }
+}

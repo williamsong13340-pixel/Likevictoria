@@ -8,6 +8,12 @@ export function approach(current: number, target: number, halfLife: number): num
   return target + (current - target) * retention(halfLife);
 }
 
+/** log(cosh(x)) without overflow: about x²/2 near zero and |x| − ln 2 far from it (slope ≤ 1). */
+export function logCosh(x: number): number {
+  const a = Math.abs(x);
+  return a + Math.log1p(Math.exp(-2 * a)) - Math.LN2;
+}
+
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }

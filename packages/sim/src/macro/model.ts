@@ -67,12 +67,15 @@ export interface MacroState {
   /** Real import-price change that has not yet reached consumer prices (log). */
   readonly pendingPassThrough: number;
   readonly reserves: number;
+  /** Domestic-currency debt; negative means the government holds net assets. */
   readonly domesticDebt: number;
   /** Anchor-currency debt valued at the current exchange rate. */
   readonly foreignDebt: number;
   /** Average rate on domestic debt; it follows market rates as the debt is refinanced. */
   readonly effectiveDebtRate: number;
   readonly logPriceLevel: number;
+  /** Months left during which a government that defaulted cannot borrow. */
+  readonly marketExclusion: number;
 }
 
 export interface MacroStep {
@@ -80,8 +83,12 @@ export interface MacroStep {
   readonly expectedInflation: number;
   readonly realRate: number;
   readonly riskPremium: number;
-  /** Capital flow that actually took place (outflows stop when reserves run out). */
   readonly capitalFlow: number;
+  /**
+   * Pressure that reserves could not cover under a fixed rate, met by exceptional financing
+   * (arrears, emergency loans): reserves change = (1 − flexibility)·(CA + capital flow + gap).
+   */
+  readonly financingGap: number;
   readonly fiscalDeficit: number;
   readonly monetizedDeficit: number;
   /** Reserves ran out under a peg; the caller must move the country to a floating regime. */
@@ -161,6 +168,7 @@ export function initialMacroState(
     foreignDebt: start.foreignDebt,
     effectiveDebtRate: policyRate + riskPremium + p.termPremium,
     logPriceLevel: 0,
+    marketExclusion: 0,
   };
 }
 
@@ -172,10 +180,15 @@ export function stepMacro(
   p: MacroParams,
 ): MacroStep {
   const flexibility = policy.exchangeRateFlexibility;
+  // After a default the government cannot borrow (see the debt section below).
+  const excluded = state.marketExclusion > 0;
+  // A recent default costs reputation; the extra premium fades as the exclusion runs out.
+  const reputationPremium =
+    (p.defaultReputationPremium * state.marketExclusion) / p.marketExclusionMonths;
   const riskPremium = riskPremiumOf(
     state.domesticDebt + state.foreignDebt,
     state.reserves,
-    inputs.politicalRiskPremium,
+    inputs.politicalRiskPremium + reputationPremium,
     p,
   );
 
@@ -191,7 +204,11 @@ export function stepMacro(
     effectiveDebtRate * state.domesticDebt +
     foreignDebtRate * state.foreignDebt -
     policy.primaryBalance;
-  const monetizedDeficit = Math.max(0, fiscalDeficit) * policy.monetizedShare;
+  // During market exclusion the defaulted debt is in arrears: interest keeps accruing on it but
+  // is not paid in cash, so only the primary deficit needs financing, and it must be printed.
+  const monetizedDeficit = excluded
+    ? Math.max(0, -policy.primaryBalance)
+    : Math.max(0, fiscalDeficit) * policy.monetizedShare;
 
   // Credibility is earned by track record: it is judged on remembered inflation.
   const inflationMiss = Math.abs(state.adaptiveExpectation - policy.inflationTarget);
@@ -274,18 +291,17 @@ export function stepMacro(
   // stops further divergence and never forces a jump back into it.
   const band = p.maxRealExchangeRateDeviation;
   const marketRealRate = clamp(solvedRealRate, Math.min(q, -band), Math.max(q, band));
-  const desiredFlow = flowAt(marketRealRate);
-  const pressure = inputs.currentAccount + sensitivity * (marketRealRate - q) + desiredFlow;
+  const capitalFlow = flowAt(marketRealRate);
+  const pressure = inputs.currentAccount + sensitivity * (marketRealRate - q) + capitalFlow;
   const desiredReserveChange = ((1 - flexibility) * pressure) / inputs.importShare;
   const pegCollapsed =
     flexibility < 1 && state.reserves + desiredReserveChange <= p.pegCrisisReserveMonths;
-  // Reserves cannot go negative: outflows that cannot be financed do not happen.
+  // Reserves cannot go negative; what they cannot cover is met by exceptional financing.
   const reserveChange = Math.max(-state.reserves, desiredReserveChange);
-  const capitalFlow =
+  const financingGap =
     flexibility < 1
-      ? desiredFlow +
-        ((reserveChange - desiredReserveChange) * inputs.importShare) / (1 - flexibility)
-      : desiredFlow;
+      ? ((reserveChange - desiredReserveChange) * inputs.importShare) / (1 - flexibility)
+      : 0;
   const inflationDifferential = (inflation - inputs.anchorInflation) / 12;
   const depreciation =
     marketRealRate -
@@ -295,26 +311,25 @@ export function stepMacro(
   const realDepreciation = depreciation - inflationDifferential;
 
   // Debt ratios with exact compounding: domestic debt is eroded by inflation, foreign debt is
-  // revalued by depreciation instead. Crossing the threshold triggers a default and write-down.
+  // revalued by depreciation instead. Printed money retires domestic debt first; foreign debt
+  // never goes negative, so any excess repayment lands on the domestic stock. Nothing is lost.
   const growth = (inflation + inputs.potentialGrowth) / 12;
   const primaryDeficit = -policy.primaryBalance / 12;
-  const domesticDebt = Math.max(
-    0,
+  const foreignShare = excluded ? 0 : policy.foreignBorrowingShare;
+  const accruedDomestic =
     state.domesticDebt * Math.exp(effectiveDebtRate / 12 - growth) +
-      (1 - policy.foreignBorrowingShare) * primaryDeficit -
-      monetizedDeficit / 12,
-  );
-  const foreignDebt = Math.max(
-    0,
+    (1 - foreignShare) * primaryDeficit -
+    monetizedDeficit / 12;
+  const accruedForeign =
     state.foreignDebt * Math.exp(foreignDebtRate / 12 - growth + depreciation) +
-      policy.foreignBorrowingShare * primaryDeficit,
-  );
-  // A restructuring writes the debt down to a sustainable share of the threshold.
+    foreignShare * primaryDeficit;
+  const foreignRepaid = Math.min(Math.max(0, -accruedDomestic), Math.max(0, accruedForeign));
+  const foreignDebt = Math.max(0, accruedForeign) - foreignRepaid;
+  const domesticDebt = accruedDomestic + Math.min(0, accruedForeign) + foreignRepaid;
+  // A restructuring writes the debt down below the threshold and shuts the market for a while.
   const totalDebt = domesticDebt + foreignDebt;
-  const defaulted = totalDebt > p.defaultDebtThreshold;
-  const kept = defaulted
-    ? Math.min(1, (p.defaultDebtThreshold / totalDebt) * (1 - p.defaultHaircut))
-    : 1;
+  const defaulted = !excluded && totalDebt > p.defaultDebtThreshold;
+  const kept = defaulted ? (p.defaultDebtThreshold / totalDebt) * (1 - p.defaultHaircut) : 1;
 
   return {
     state: {
@@ -330,11 +345,13 @@ export function stepMacro(
       foreignDebt: foreignDebt * kept,
       effectiveDebtRate,
       logPriceLevel: state.logPriceLevel + inflation / 12,
+      marketExclusion: defaulted ? p.marketExclusionMonths : Math.max(0, state.marketExclusion - 1),
     },
     expectedInflation,
     realRate: policyRate - expectedInflation,
     riskPremium,
     capitalFlow,
+    financingGap,
     fiscalDeficit,
     monetizedDeficit,
     pegCollapsed,
