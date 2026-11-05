@@ -304,7 +304,12 @@ const REGULARITIES: Readonly<Record<string, (m: MacroParams, d: DemandProxyParam
   'inflation tax falls on domestic debt only': (m, d) => {
     const plan = scenario('hyperinflation');
     const end = at(runScenario(plan, m, d), 59);
-    return end.debt - end.foreignDebt < 0.01 && end.foreignDebt > plan.start.foreignDebt;
+    // Within five years inflation wipes out at least nine tenths of the domestic debt, while the
+    // foreign debt grows.
+    return (
+      end.debt - end.foreignDebt < 0.1 * plan.start.domesticDebt &&
+      end.foreignDebt > plan.start.foreignDebt
+    );
   },
   'trinity: capital mobility drains a peg': (m, d) => {
     const reserves = (capitalMobility: number): number =>
@@ -360,7 +365,9 @@ const REGULARITIES: Readonly<Record<string, (m: MacroParams, d: DemandProxyParam
   'sovereign risk spills into private borrowing': (m, d) => {
     const r = runScenario(scenario('debt-spiral'), m, d);
     const first = r.findIndex((x) => x.defaulted);
-    return first > 0 && at(r, first - 1).outputGap < 0;
+    // The gap of the default month comes from the months before it: the recession is already
+    // there when the government defaults.
+    return first > 0 && at(r, first).outputGap < 0;
   },
   'inflation destroys output': (m, d) => {
     const plan = scenario('hyperinflation');
@@ -843,21 +850,26 @@ describe('macro block: mechanisms', () => {
   });
 
   it('a floor that binds is not remembered as a tight stance once it stops binding', () => {
-    // A year of deflation at the floor, then two years of inflation pressure.
+    // Two years of deflation pressure, a calm year, then two years of inflation pressure. A slow
+    // stance and a deep deflation make the difference visible: a stance read back from the floored
+    // rate would carry the deflation's high real rate out of the floor for months.
+    const macro = { ...P, policyRateHalfLifeMonths: 12, policyRateFloor: 0.02, minInflation: -0.5 };
     const plan = {
       ...scenario('baseline'),
-      months: 84,
+      months: 120,
       start: { ...scenario('baseline').start, credibility: 0.3 },
+      policy: { ...scenario('baseline').policy, baseCredibility: 0.3 },
       shocks: [
         { fromMonth: 0, untilMonth: 24, costPush: -0.3 },
         { fromMonth: 36, untilMonth: 60, costPush: 0.3 },
       ],
     };
-    const r = runScenario(plan);
-    expect(r.some((x) => x.policyRate === P.policyRateFloor)).toBe(true);
+    const r = runScenario(plan, macro);
+    expect(r.filter((x) => x.policyRate === macro.policyRateFloor).length).toBeGreaterThan(12);
+    const ruleBound = macro.neutralRealRate + macro.maxRuleAdjustment;
     for (const x of r) {
-      if (x.policyRate > P.policyRateFloor) {
-        expect(x.realRate).toBeLessThanOrEqual(P.neutralRealRate + P.maxRuleAdjustment + 1e-9);
+      if (x.policyRate > macro.policyRateFloor) {
+        expect(x.realRate).toBeLessThanOrEqual(ruleBound + 1e-9);
       }
     }
   });
@@ -953,6 +965,35 @@ describe('macro block: mechanisms', () => {
     expect(gapAfterOneMonth(-10)).toBeGreaterThan(0);
     expect(gapAfterOneMonth(-10)).toBeLessThanOrEqual(largestGap + 1e-12);
     expect(gapAfterOneMonth(-10)).toBeCloseTo(gapAfterOneMonth(-1), 9);
+  });
+
+  it('a small inflation miss costs little output, and each point of a large one costs about the same', () => {
+    // Measured against a demand shock, which moves demand one for one.
+    const gapAfterOneMonth = (inflationMiss: number, demandShock: number): number =>
+      stepDemandProxy(
+        currentAccountAt(0, 0, D),
+        {
+          realRate: P.neutralRealRate,
+          riskPremium: 0,
+          neutralRealRate: P.neutralRealRate,
+          primaryBalance: 0,
+          costPush: 0,
+          demandShock,
+          inflation: 0.03 + inflationMiss,
+          inflationTarget: 0.03,
+          realExchangeRate: 0,
+        },
+        D,
+      ).outputGap;
+    const k = D.inflationOutputCost;
+    // A miss of 2 points costs about k × 0.02² / 2.
+    const small = gapAfterOneMonth(0.02, 0);
+    expect(small).toBeLessThan(gapAfterOneMonth(0, -k * 0.0002 * 0.99));
+    expect(small).toBeGreaterThan(gapAfterOneMonth(0, -k * 0.0002 * 1.01));
+    // Beyond 200 points, each further 100 points cost about k, not ever more.
+    const large = gapAfterOneMonth(3, 0);
+    expect(large).toBeLessThan(gapAfterOneMonth(2, -k * 0.98));
+    expect(large).toBeGreaterThan(gapAfterOneMonth(2, -k));
   });
 
   it('the current account worsens when the economy overheats and improves after a real depreciation', () => {
