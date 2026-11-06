@@ -68,8 +68,9 @@ export interface MacroState {
   readonly credibility: number;
   readonly policyRate: number;
   /**
-   * The government's interest bill averaged over recent months. The central bank prints its share
-   * of the budgeted primary deficit plus this average, not of one month's interest.
+   * The government's interest bill averaged over recent months, on the debt owed at the start of
+   * each month. The central bank plans to print its share of the budgeted primary deficit plus
+   * this average, not of one month's interest.
    */
   readonly interestBill: number;
   /**
@@ -436,6 +437,15 @@ export function stepMacro(
     indexedCoupon +
     state.foreignDebt * Math.expm1(foreignDebtRate / 12) * Math.exp(depreciation - growth);
   const interest = excluded ? 0 : 12 * monthInterest;
+  // The central bank plans with what it knows when the month begins: the debt it owes then, at the
+  // month's rates, before this month's inflation and exchange rate move the debt's share of GDP.
+  // Planning on those moves would feed the exchange rate straight back into printing.
+  const plannedInterest = excluded
+    ? 0
+    : 12 *
+      (marketDebt * Math.expm1(marketDebtRate / 12) +
+        indexedDebt * Math.expm1(worldRealRate / 12) +
+        state.foreignDebt * Math.expm1(foreignDebtRate / 12));
   const monetizedDeficit = Math.min(plannedPrinting, Math.max(0, interest - policy.primaryBalance));
   const primaryDeficit = -policy.primaryBalance / 12;
   const foreignShare = excluded ? 0 : policy.foreignBorrowingShare;
@@ -471,7 +481,7 @@ export function stepMacro(
       perceivedMonetization,
       credibility,
       policyRate,
-      interestBill: approach(state.interestBill, interest, p.financingHalfLifeMonths),
+      interestBill: approach(state.interestBill, plannedInterest, p.financingHalfLifeMonths),
       policyStance,
       logExchangeRate: state.logExchangeRate + depreciation,
       realExchangeRate,

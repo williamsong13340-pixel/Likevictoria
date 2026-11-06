@@ -139,6 +139,71 @@ function steadyState(
 }
 
 /**
+ * The property test's sample for one seed: every scenario, with its own policy and with a random
+ * policy changed once midway, for parameter sets drawn uniformly, at the endpoints and mixed.
+ */
+function* propertyCases(seed: number): Generator<{
+  readonly where: string;
+  readonly plan: MacroScenario;
+  readonly macro: MacroParams;
+  readonly demand: DemandProxyParams;
+}> {
+  const random = lcg(seed);
+  for (const sampling of ['uniform', 'endpoints', 'mixed'] as const) {
+    for (let i = 0; i < 15; i++) {
+      const macro = sampleParams(MACRO_PARAM_SPECS, random, sampling);
+      const demand = sampleParams(DEMAND_PROXY_PARAM_SPECS, random, sampling);
+      for (const base of MACRO_SCENARIOS) {
+        const plans: MacroScenario[] = [
+          { ...base, months: 1200 },
+          {
+            ...base,
+            months: 1200,
+            policy: samplePolicy(random),
+            policyChanges: [
+              ...base.policyChanges,
+              { month: 300 + Math.floor(random() * 600), policy: samplePolicy(random) },
+            ],
+          },
+        ];
+        for (const [k, plan] of plans.entries()) {
+          const where = `${base.id}, ${sampling} parameter set ${String(i)}, plan ${String(k)}`;
+          yield { where, plan, macro, demand };
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Every month finite and within its bounds, and at most one reversal every three months on
+ * average, over a decade and over any three years, so a burst of oscillation cannot hide in an
+ * otherwise calm decade.
+ */
+function expectSafe(
+  records: readonly MonthRecord[],
+  macro: MacroParams,
+  demand: DemandProxyParams,
+  where: string,
+): void {
+  const broken = records.find(
+    (r) =>
+      Object.values(r).some((v) => typeof v === 'number' && !Number.isFinite(v)) ||
+      Math.abs(r.capitalFlow) > macro.maxCapitalFlow + 1e-9 ||
+      Math.abs(r.outputGap) > demand.maxOutputGap + 1e-9 ||
+      Math.abs(r.currentAccount) > demand.maxCurrentAccount + 1e-9 ||
+      r.inflation < macro.minInflation - 1e-9 ||
+      r.inflation > macro.maxInflation + 1e-9 ||
+      r.reserves < 0 ||
+      r.financingGap < 0 ||
+      r.debt > macro.defaultDebtThreshold + 1e-9,
+  );
+  expect(broken, where).toBeUndefined();
+  expect(maxReversals(records, 121), where).toBeLessThanOrEqual(40);
+  expect(maxReversals(records, 37), where).toBeLessThanOrEqual(12);
+}
+
+/**
  * The largest number of month-to-month inflation reversals larger than one percentage point in
  * any window of the given length. A period-2 or period-3 cycle reverses almost every month.
  */
@@ -580,9 +645,12 @@ describe('macro block: mechanisms', () => {
     const costly = stepMacro({ ...steady, effectiveDebtRate: 0.5 }, printer, QUIET_INPUTS, P);
     expect(costly.fiscalDeficit).toBeGreaterThan(usual.fiscalDeficit + 0.1);
     expect(costly.monetizedDeficit).toBe(usual.monetizedDeficit);
+    // The bill is planned on the debt owed when the month begins, at the month's rates.
     const moved = 1 - 2 ** (-1 / P.financingHalfLifeMonths);
+    const planned = (step: MacroStep): number =>
+      12 * steady.domesticDebt * Math.expm1(step.state.effectiveDebtRate / 12);
     expect(costly.state.interestBill - usual.state.interestBill).toBeCloseTo(
-      (costly.fiscalDeficit - usual.fiscalDeficit) * moved,
+      (planned(costly) - planned(usual)) * moved,
       12,
     );
   });
@@ -1395,48 +1463,32 @@ describe('macro block: numerical safety over every documented range', () => {
   });
 
   it('stays finite, bounded and free of high-frequency oscillation for a hundred years', () => {
-    const random = lcg(2024);
-    for (const sampling of ['uniform', 'endpoints', 'mixed'] as const) {
-      for (let i = 0; i < 15; i++) {
-        const macro = sampleParams(MACRO_PARAM_SPECS, random, sampling);
-        const demand = sampleParams(DEMAND_PROXY_PARAM_SPECS, random, sampling);
-        for (const base of MACRO_SCENARIOS) {
-          // The scenario's own policy, and any policy the limits allow, changed once midway.
-          const plans: MacroScenario[] = [
-            { ...base, months: 1200 },
-            {
-              ...base,
-              months: 1200,
-              policy: samplePolicy(random),
-              policyChanges: [
-                ...base.policyChanges,
-                { month: 300 + Math.floor(random() * 600), policy: samplePolicy(random) },
-              ],
-            },
-          ];
-          for (const [k, plan] of plans.entries()) {
-            const records = runScenario(plan, macro, demand);
-            const where = `${base.id}, ${sampling} parameter set ${String(i)}, plan ${String(k)}`;
-            const broken = records.find(
-              (r) =>
-                Object.values(r).some((v) => typeof v === 'number' && !Number.isFinite(v)) ||
-                Math.abs(r.capitalFlow) > macro.maxCapitalFlow + 1e-9 ||
-                Math.abs(r.outputGap) > demand.maxOutputGap + 1e-9 ||
-                Math.abs(r.currentAccount) > demand.maxCurrentAccount + 1e-9 ||
-                r.inflation < macro.minInflation - 1e-9 ||
-                r.inflation > macro.maxInflation + 1e-9 ||
-                r.reserves < 0 ||
-                r.financingGap < 0 ||
-                r.debt > macro.defaultDebtThreshold + 1e-9,
-            );
-            expect(broken, where).toBeUndefined();
-            // At most one reversal every three months on average, over a decade and over any
-            // three years, so a burst of oscillation cannot hide in an otherwise calm decade.
-            expect(maxReversals(records, 121), where).toBeLessThanOrEqual(40);
-            expect(maxReversals(records, 37), where).toBeLessThanOrEqual(12);
-          }
-        }
-      }
+    for (const { where, plan, macro, demand } of propertyCases(2024)) {
+      expectSafe(runScenario(plan, macro, demand), macro, demand, where);
     }
   }, 60_000);
+
+  it('the exchange-rate and printing loop stays damped where it once oscillated', () => {
+    // Corners from earlier reviews: net foreign assets revalued every month swung the deficit,
+    // and with it the printing, when the central bank planned on this month's exchange rate.
+    const corners: readonly (readonly [number, string])[] = [
+      [8, 'peg-closed-capital, endpoints parameter set 5, plan 1'],
+      [22, 'peg-closed-capital, mixed parameter set 5, plan 1'],
+      [45, 'baseline, mixed parameter set 2, plan 1'],
+      [95, 'peg-closed-capital, endpoints parameter set 5, plan 1'],
+    ];
+    for (const [seed, corner] of corners) {
+      const found = [...propertyCases(seed)].find((c) => c.where === corner);
+      expect(found, corner).toBeDefined();
+      if (found !== undefined) {
+        const { plan, macro, demand } = found;
+        expectSafe(
+          runScenario(plan, macro, demand),
+          macro,
+          demand,
+          `seed ${String(seed)}, ${corner}`,
+        );
+      }
+    }
+  });
 });
