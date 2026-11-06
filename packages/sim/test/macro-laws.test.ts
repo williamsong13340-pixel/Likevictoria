@@ -139,9 +139,9 @@ function steadyState(
 
 /**
  * The largest number of month-to-month inflation reversals larger than one percentage point in
- * any 121-month window. A period-2 or period-3 cycle reverses almost every month.
+ * any window of the given length. A period-2 or period-3 cycle reverses almost every month.
  */
-function maxReversalsPerDecade(records: readonly MonthRecord[]): number {
+function maxReversals(records: readonly MonthRecord[], months: number): number {
   const reversal = records.map((r, k) => {
     const previous = records[k - 1];
     const older = records[k - 2];
@@ -153,7 +153,7 @@ function maxReversalsPerDecade(records: readonly MonthRecord[]): number {
   let inWindow = 0;
   let most = 0;
   for (const [k, flag] of reversal.entries()) {
-    inWindow += flag - (reversal[k - 121] ?? 0);
+    inWindow += flag - (reversal[k - months] ?? 0);
     most = Math.max(most, inWindow);
   }
   return most;
@@ -1309,7 +1309,10 @@ describe('macro block: numerical safety over every documented range', () => {
                 r.debt > macro.defaultDebtThreshold + 1e-9,
             );
             expect(broken, where).toBeUndefined();
-            expect(maxReversalsPerDecade(records), where).toBeLessThanOrEqual(40);
+            // At most one reversal every three months on average, over a decade and over any
+            // three years, so a burst of oscillation cannot hide in an otherwise calm decade.
+            expect(maxReversals(records, 121), where).toBeLessThanOrEqual(40);
+            expect(maxReversals(records, 37), where).toBeLessThanOrEqual(12);
           }
         }
       }
