@@ -87,10 +87,10 @@ export interface MacroState {
   /** Domestic-currency debt; never negative, since net assets are held abroad. */
   readonly domesticDebt: number;
   /**
-   * The part of the domestic debt left from a restructuring (never more than all of it). It is
-   * indexed: inflation is added to its principal, and it pays the anchor's real rate in cash.
-   * Nothing is refinanced during the exclusion; after it, the indexed debt matures into market
-   * debt.
+   * The part of the domestic debt left from a restructuring (never more than all of it, and all of
+   * it during the exclusion). It is indexed: inflation is added to its principal, and it pays the
+   * anchor's real rate in cash (during the exclusion, that interest is added to the principal too).
+   * After the exclusion it matures into market debt.
    */
   readonly indexedDebt: number;
   /** Anchor-currency debt valued at the current exchange rate; negative means net assets. */
@@ -128,6 +128,7 @@ export interface MacroStep {
    * exclusion interest is capitalized, so only the primary deficit counts.
    */
   readonly fiscalDeficit: number;
+  /** Money printed for the government: its planned share, never more than the cash deficit. */
   readonly monetizedDeficit: number;
   /** Reserves ran out under a peg; the caller must move the country to a floating regime. */
   readonly pegCollapsed: boolean;
@@ -196,8 +197,9 @@ export function initialMacroState(
     inputs.politicalRiskPremium,
     p,
   );
+  const inflation = clamp(start.inflation, p.minInflation, p.maxInflation);
   const expectedInflation =
-    start.credibility * policy.inflationTarget + (1 - start.credibility) * start.inflation;
+    start.credibility * policy.inflationTarget + (1 - start.credibility) * inflation;
   const anchorWeight = anchorWeightOf(policy, p);
   const policyStance = policy.independentCentralBank
     ? ruleStanceOf(expectedInflation, riskPremium, anchorWeight, policy, inputs, p)
@@ -207,10 +209,10 @@ export function initialMacroState(
     (1 - anchorWeight) * expectedInflation + policyStance,
   );
   const effectiveDebtRate = policyRate + riskPremium + p.termPremium;
-  const horizon = 1 / (1 + p.expectationAttention * Math.max(0, start.inflation));
+  const horizon = 1 / (1 + p.expectationAttention * Math.max(0, inflation));
   return {
-    inflation: start.inflation,
-    adaptiveExpectation: start.inflation,
+    inflation,
+    adaptiveExpectation: inflation,
     expectedInflation,
     perceivedMonetization: 0,
     credibility: start.credibility,
@@ -253,25 +255,21 @@ export function stepMacro(
     p,
   );
 
-  // The central bank prints its share of the government's financing need: the primary deficit the
-  // budget sets, plus the interest bill, which swings with rates and the exchange rate month by
-  // month and so is taken at its recent average. It cannot buy more domestic debt than there is,
-  // so once inflation has wiped the debt out, it prints no more than the primary deficit. During
-  // an exclusion the government cannot borrow, and interest is capitalized, so a primary deficit
-  // must be printed in full.
-  const monetizedDeficit = excluded
+  // The central bank plans to print its share of the government's financing need: the primary
+  // deficit the budget sets, plus the interest bill, which swings with rates and the exchange rate
+  // month by month and so is taken at its recent average. People form expectations from the plan.
+  // What it actually prints never exceeds the month's cash need (below). During an exclusion the
+  // government cannot borrow, and interest is capitalized, so a primary deficit is printed in full.
+  const plannedPrinting = excluded
     ? Math.max(0, -policy.primaryBalance)
-    : Math.min(
-        Math.max(0, state.interestBill - policy.primaryBalance) * policy.monetizedShare,
-        Math.max(0, -policy.primaryBalance) + 12 * state.domesticDebt,
-      );
+    : Math.max(0, state.interestBill - policy.primaryBalance) * policy.monetizedShare;
 
   // Credibility is earned by track record: it is judged on remembered inflation.
   const inflationMiss = Math.abs(state.adaptiveExpectation - policy.inflationTarget);
   const credibilityTarget = clamp(
     policy.baseCredibility -
       p.inflationMissPenalty * Math.max(0, inflationMiss - p.inflationMissTolerance) -
-      p.monetizationCredibilityPenalty * monetizedDeficit,
+      p.monetizationCredibilityPenalty * plannedPrinting,
     p.minCredibility,
     1,
   );
@@ -285,7 +283,7 @@ export function stepMacro(
   const memoryHalfLife = p.expectationHalfLifeMonths * horizon;
   const perceivedMonetization = approach(
     state.perceivedMonetization,
-    monetizedDeficit,
+    plannedPrinting,
     memoryHalfLife,
   );
   const moneyDemand = Math.max(
@@ -390,14 +388,14 @@ export function stepMacro(
   const realDepreciation = realExchangeRate - q;
   const depreciation = realDepreciation + inflationDifferential;
 
-  // Interest at this month's rates. Nothing is refinanced during an exclusion. New debt is issued
-  // shorter the higher inflation is, so the share of market debt refinanced each month moves
-  // toward that of new debt as old debt matures. Indexed debt left from a restructuring keeps the
-  // terms set then: it matures at the repricing half-life of normal times, inflation is added to
-  // its principal, and it pays the anchor's real rate in cash. What matures becomes market debt at
-  // this month's market rate, so a reopening market reprices it gradually, not all at once.
-  // Foreign debt pays the anchor rate plus the premium (none during an exclusion). During an
-  // exclusion interest is capitalized rather than paid in cash.
+  // Interest at this month's rates. New debt is issued shorter the higher inflation is, so the share
+  // of market debt refinanced each month moves toward that of new debt as old debt matures.
+  // Indexed debt left from a restructuring keeps the terms set then: it matures at the repricing
+  // half-life of normal times, inflation is added to its principal, and it pays the anchor's real
+  // rate in cash. What matures becomes market debt at this month's market rate, so a reopening
+  // market reprices it gradually, not all at once. During an exclusion nothing matures, and all
+  // domestic debt is restructured debt. Foreign debt pays the anchor rate plus the premium (none
+  // during an exclusion).
   const marketRate = policyRate + riskPremium + p.termPremium;
   const worldRealRate = inputs.anchorRate - inputs.anchorInflation;
   const foreignDebtRate = foreignDebtRateOf(
@@ -405,12 +403,11 @@ export function stepMacro(
     excluded ? 0 : riskPremium,
     inputs.anchorRate,
   );
-  const refinanced = excluded ? 0 : state.marketRefinancing;
   const matured = excluded ? 0 : 1 - retention(p.debtRepricingHalfLifeMonths);
   const oldMarketDebt = state.domesticDebt - state.indexedDebt;
   const indexedDebt = state.indexedDebt * (1 - matured);
-  const keptMarketDebt = (1 - refinanced) * oldMarketDebt;
-  const issued = refinanced * oldMarketDebt + matured * state.indexedDebt;
+  const keptMarketDebt = (1 - state.marketRefinancing) * oldMarketDebt;
+  const issued = state.marketRefinancing * oldMarketDebt + matured * state.indexedDebt;
   const marketDebt = keptMarketDebt + issued;
   const newDebtRefinancing = 1 - retention(p.debtRepricingHalfLifeMonths * horizon);
   const marketDebtRate =
@@ -421,22 +418,31 @@ export function stepMacro(
     marketDebt > 0
       ? (keptMarketDebt * state.marketRefinancing + issued * newDebtRefinancing) / marketDebt
       : newDebtRefinancing;
-  const interest = excluded
-    ? 0
-    : marketDebtRate * marketDebt +
-      worldRealRate * indexedDebt +
-      foreignDebtRate * state.foreignDebt;
 
   // Debt ratios with exact compounding: domestic debt is eroded by inflation, foreign debt is
-  // revalued by depreciation instead. Printed money retires domestic debt first. A negative stock
-  // repays the other one, and net assets are held abroad, so domestic debt is never negative.
-  // Nothing is lost.
+  // revalued by depreciation instead. The month's interest is measured the same way, as a share of
+  // the month's GDP. The cash need (interest plus the primary deficit) is printed up to the
+  // central bank's plan and borrowed otherwise: interest on market and foreign debt rolls into
+  // those stocks, the indexed debt's coupon into market debt. The central bank never prints more
+  // than the need, so printing cannot buy back debt that inflation has already wiped out. During
+  // an exclusion interest is capitalized into each stock instead of paid. Printed money retires
+  // domestic debt first. A negative stock repays the other one, and net assets are held abroad, so
+  // domestic debt is never negative. Nothing is lost.
   const growth = (inflation + inputs.potentialGrowth) / 12;
+  const indexedPrincipal = indexedDebt * Math.exp(inflation / 12 - growth);
+  const indexedCoupon = indexedPrincipal * Math.expm1(worldRealRate / 12);
+  const monthInterest =
+    marketDebt * Math.expm1(marketDebtRate / 12) * Math.exp(-growth) +
+    indexedCoupon +
+    state.foreignDebt * Math.expm1(foreignDebtRate / 12) * Math.exp(depreciation - growth);
+  const interest = excluded ? 0 : 12 * monthInterest;
+  const monetizedDeficit = Math.min(plannedPrinting, Math.max(0, interest - policy.primaryBalance));
   const primaryDeficit = -policy.primaryBalance / 12;
   const foreignShare = excluded ? 0 : policy.foreignBorrowingShare;
-  const accruedIndexed = indexedDebt * Math.exp((inflation + worldRealRate) / 12 - growth);
+  const accruedIndexed = indexedPrincipal + (excluded ? indexedCoupon : 0);
   const accruedDomestic =
     marketDebt * Math.exp(marketDebtRate / 12 - growth) +
+    (excluded ? 0 : indexedCoupon) +
     accruedIndexed +
     (1 - foreignShare) * primaryDeficit -
     monetizedDeficit / 12;
@@ -448,7 +454,7 @@ export function stepMacro(
     totalDebt < 0 || accruedDomestic < 0 ? totalDebt : Math.max(0, accruedForeign);
   const domesticDebt = totalDebt - foreignDebt;
   // Repayments retire market debt first.
-  const remainingIndexed = Math.min(domesticDebt, accruedIndexed);
+  const remainingIndexed = excluded ? domesticDebt : Math.min(domesticDebt, accruedIndexed);
   // A restructuring writes the debt down below the threshold and shuts the market for a while;
   // the restructured domestic debt is indexed.
   // Until the market reopens the restructuring is still being settled, so whatever pushes the

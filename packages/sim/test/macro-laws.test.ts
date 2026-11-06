@@ -184,6 +184,15 @@ const QUIET_STATE: MacroState = initialMacroState(
   QUIET_INPUTS,
   P,
 );
+
+/**
+ * A year's interest at this month's pace on foreign debt (or earnings on net assets), as a share
+ * of the month's GDP: how the model measures interest, consistent with exact compounding.
+ */
+function foreignInterest(step: MacroStep, foreignDebt: number, rate: number): number {
+  const growth = (step.state.inflation + QUIET_INPUTS.potentialGrowth) / 12;
+  return 12 * foreignDebt * Math.expm1(rate / 12) * Math.exp(step.state.logExchangeRate - growth);
+}
 const RESTRUCTURED_DEBT = P.defaultDebtThreshold * (1 - P.defaultHaircut);
 
 /** The regularities, each as a predicate over parameter sets (used at defaults and nearby). */
@@ -549,7 +558,8 @@ describe('macro block: mechanisms', () => {
     // People take in printing as fast as they take in inflation: with high remembered inflation
     // they pay close attention.
     const memory = params.expectationHalfLifeMonths / (1 + params.expectationAttention * 5);
-    const perceived = printing.monetizedDeficit * (1 - 2 ** (-1 / memory));
+    const plan = flight.interestBill + 0.01;
+    const perceived = plan * (1 - 2 ** (-1 / memory));
     expect(printing.state.perceivedMonetization).toBeCloseTo(perceived, 12);
     expect(printing.state.expectedInflation - borrowing.state.expectedInflation).toBeCloseTo(
       (printing.state.credibility * params.monetizationInflation * perceived) /
@@ -584,15 +594,43 @@ describe('macro block: mechanisms', () => {
       step.state.policyRate + step.riskPremium + P.termPremium,
       12,
     );
+    const horizon = 1 + P.expectationAttention * debtFree.adaptiveExpectation;
+    expect(step.state.marketRefinancing).toBeCloseTo(
+      1 - 2 ** (-horizon / P.debtRepricingHalfLifeMonths),
+      12,
+    );
   });
 
-  it('once inflation has wiped out the domestic debt, only the budget deficit is printed', () => {
+  it("the central bank never prints more than the month's cash deficit", () => {
+    // A stale interest bill: the debt it was owed on is gone.
     const printer = { ...BASE_POLICY, primaryBalance: -0.02, monetizedShare: 1 };
-    const stale = { ...QUIET_STATE, interestBill: 0.5, indexedDebt: 0 };
-    const none = stepMacro({ ...stale, domesticDebt: 0 }, printer, QUIET_INPUTS, P);
-    expect(none.monetizedDeficit).toBeCloseTo(0.02, 12);
-    const little = stepMacro({ ...stale, domesticDebt: 0.001 }, printer, QUIET_INPUTS, P);
-    expect(little.monetizedDeficit).toBeCloseTo(0.02 + 12 * 0.001, 12);
+    const stale = { ...QUIET_STATE, interestBill: 0.5, domesticDebt: 0, indexedDebt: 0 };
+    const step = stepMacro(stale, printer, QUIET_INPUTS, P);
+    expect(step.fiscalDeficit).toBeCloseTo(0.02, 12);
+    expect(step.monetizedDeficit).toBeCloseTo(0.02, 12);
+    expect(step.state.foreignDebt).toBe(0);
+  });
+
+  it('the monetized share covers interest on foreign debt too', () => {
+    const owing = { ...QUIET_STATE, domesticDebt: 0, indexedDebt: 0, foreignDebt: 1 };
+    const bill = QUIET_INPUTS.anchorRate; // about the interest on a foreign debt of one GDP
+    const printed = (monetizedShare: number): number =>
+      stepMacro(
+        { ...owing, interestBill: bill },
+        { ...BASE_POLICY, primaryBalance: -0.02, monetizedShare },
+        QUIET_INPUTS,
+        P,
+      ).monetizedDeficit;
+    expect(printed(1)).toBeGreaterThan(0.02 + 0.8 * bill);
+    expect(printed(0.5)).toBeCloseTo(0.5 * (bill + 0.02), 12);
+  });
+
+  it('printing never makes a government a net creditor, even when inflation wipes its debt out', () => {
+    const plan = scenario('fiscal-dominance');
+    const heavy = { ...plan, months: 240, start: { ...plan.start, domesticDebt: 1.5 } };
+    const r = runScenario(heavy);
+    expect(Math.max(...r.map((x) => x.inflation))).toBeGreaterThan(5);
+    expect(Math.min(...r.map((x) => x.debt))).toBeGreaterThan(-1e-12);
   });
 
   it('a government that prints after the market reopens does not end up a net creditor', () => {
@@ -605,7 +643,7 @@ describe('macro block: mechanisms', () => {
       policyChanges: [...plan.policyChanges, { month: reopening, policy: { monetizedShare: 1 } }],
     });
     expect(Math.max(...printing.map((x) => x.monetizedDeficit))).toBeGreaterThan(0.05);
-    expect(Math.min(...printing.map((x) => x.debt))).toBeGreaterThanOrEqual(0);
+    expect(Math.min(...printing.map((x) => x.debt))).toBeGreaterThan(-1e-12);
   });
 
   it('the risk premium saturates', () => {
@@ -623,7 +661,14 @@ describe('macro block: mechanisms', () => {
     const owing = { ...QUIET_STATE, domesticDebt: 0, foreignDebt: 0.5 };
     const calm = stepMacro(owing, BASE_POLICY, QUIET_INPUTS, P);
     const risky = stepMacro(owing, BASE_POLICY, { ...QUIET_INPUTS, politicalRiskPremium: 0.05 }, P);
-    expect(risky.fiscalDeficit - calm.fiscalDeficit).toBeCloseTo(risky.riskPremium * 0.5, 9);
+    expect(risky.riskPremium).toBeGreaterThan(calm.riskPremium);
+    for (const step of [calm, risky]) {
+      expect(step.fiscalDeficit).toBeCloseTo(
+        foreignInterest(step, 0.5, QUIET_INPUTS.anchorRate + step.riskPremium) -
+          BASE_POLICY.primaryBalance,
+        12,
+      );
+    }
   });
 
   it('new borrowing goes into foreign currency only as the policy says', () => {
@@ -654,7 +699,7 @@ describe('macro block: mechanisms', () => {
       { ...QUIET_INPUTS, politicalRiskPremium: 0.1 },
       P,
     );
-    expect(rich.fiscalDeficit).toBeCloseTo(-QUIET_INPUTS.anchorRate, 12);
+    expect(rich.fiscalDeficit).toBeCloseTo(foreignInterest(rich, -1, QUIET_INPUTS.anchorRate), 12);
   });
 
   it('a floating currency never touches the reserves', () => {
@@ -793,10 +838,13 @@ describe('macro block: mechanisms', () => {
       // Repayments retire market debt first.
       if (!excluded) {
         expect(step.state.indexedDebt).toBeCloseTo(
-          Math.min(step.state.domesticDebt, indexed * Math.exp(indexedRate / 12 - growth)),
+          Math.min(step.state.domesticDebt, indexed * Math.exp(step.state.inflation / 12 - growth)),
           12,
         );
       }
+      // Printing never exceeds the month's need, so it never turns debt into net assets.
+      if (state.foreignDebt >= 0 && policy.primaryBalance <= 0)
+        expect(total).toBeGreaterThan(-1e-12);
       expect(step.state.indexedDebt).toBeLessThanOrEqual(step.state.domesticDebt + 1e-12);
     }
   });
@@ -873,20 +921,23 @@ describe('macro block: mechanisms', () => {
     };
     const step = stepMacro(reopened, BASE_POLICY, QUIET_INPUTS, P);
     const stays = 2 ** (-1 / P.debtRepricingHalfLifeMonths);
-    const indexedRate =
-      step.state.inflation + QUIET_INPUTS.anchorRate - QUIET_INPUTS.anchorInflation;
     const growth = (step.state.inflation + QUIET_INPUTS.potentialGrowth) / 12;
-    expect(step.state.indexedDebt).toBeCloseTo(
-      0.8 * stays * Math.exp(indexedRate / 12 - growth),
-      12,
-    );
+    const principal = 0.8 * stays * Math.exp(step.state.inflation / 12 - growth);
+    expect(step.state.indexedDebt).toBeCloseTo(principal, 12);
     // What matured was refinanced at this month's market rate, whatever the old coupons were.
     const marketRate = step.state.policyRate + step.riskPremium + P.termPremium;
     expect(step.state.effectiveDebtRate).toBeCloseTo(marketRate, 12);
     // In cash, indexed debt pays only the anchor's real rate; inflation is added to its principal.
     const worldRealRate = QUIET_INPUTS.anchorRate - QUIET_INPUTS.anchorInflation;
-    expect(step.fiscalDeficit).toBeCloseTo(
-      0.8 * (stays * worldRealRate + (1 - stays) * marketRate) - BASE_POLICY.primaryBalance,
+    const interest =
+      12 *
+      (0.8 * (1 - stays) * Math.expm1(marketRate / 12) * Math.exp(-growth) +
+        principal * Math.expm1(worldRealRate / 12));
+    expect(step.fiscalDeficit).toBeCloseTo(interest - BASE_POLICY.primaryBalance, 12);
+    // What matured is issued at the maturity of new debt, short while inflation is high.
+    const horizon = 1 + P.expectationAttention * reopened.adaptiveExpectation;
+    expect(step.state.marketRefinancing).toBeCloseTo(
+      1 - 2 ** (-horizon / P.debtRepricingHalfLifeMonths),
       12,
     );
   });
@@ -945,6 +996,33 @@ describe('macro block: mechanisms', () => {
     });
     const next = defaultMonths(consolidated).find((month) => month > first) ?? plan.months;
     expect(next - reopening).toBeGreaterThan(120);
+  });
+
+  it('during an exclusion all domestic debt is restructured debt, to the last bit', () => {
+    // A rounding residual of market debt, with a stale coupon that would compound it.
+    const excluded: MacroState = {
+      ...QUIET_STATE,
+      marketExclusion: 12,
+      domesticDebt: 0.8,
+      indexedDebt: 0.8 - 1e-16,
+      effectiveDebtRate: 18,
+    };
+    const step = stepMacro(excluded, BASE_POLICY, QUIET_INPUTS, P);
+    expect(step.state.indexedDebt).toBe(step.state.domesticDebt);
+  });
+
+  it("the first state keeps starting inflation within the model's bounds", () => {
+    const start = {
+      inflation: 20,
+      credibility: 0.5,
+      reserves: 6,
+      domesticDebt: 0.5,
+      foreignDebt: 0,
+    };
+    const tight = { ...P, maxInflation: 1 };
+    const first = initialMacroState(start, BASE_POLICY, QUIET_INPUTS, tight);
+    expect(first.inflation).toBe(1);
+    expect(first.adaptiveExpectation).toBe(1);
   });
 
   it('until the market reopens, debt cannot climb back above its restructured level', () => {
@@ -1096,19 +1174,24 @@ describe('macro block: mechanisms', () => {
     expect(step.riskPremium).toBeLessThanOrEqual(P.maxRiskPremium);
   });
 
-  it("the first state's interest bill is the first month's interest", () => {
-    // Net assets held abroad earn the anchor rate, with no premium, from the very first month.
+  it('the first state charges no premium on net assets and dates its debt at the starting inflation', () => {
     const start = {
-      inflation: 0.03,
+      inflation: 1,
       credibility: 0.8,
       reserves: 6,
-      domesticDebt: 0,
+      domesticDebt: 0.5,
       foreignDebt: -1,
     };
     const risky = { ...QUIET_INPUTS, politicalRiskPremium: 0.1 };
     const first = initialMacroState(start, BASE_POLICY, risky, P);
-    const step = stepMacro(first, BASE_POLICY, risky, P);
-    expect(first.interestBill).toBeCloseTo(step.fiscalDeficit + BASE_POLICY.primaryBalance, 12);
+    expect(first.interestBill).toBeCloseTo(
+      first.effectiveDebtRate * 0.5 - QUIET_INPUTS.anchorRate,
+      12,
+    );
+    expect(first.marketRefinancing).toBeCloseTo(
+      1 - 2 ** (-(1 + P.expectationAttention) / P.debtRepricingHalfLifeMonths),
+      12,
+    );
   });
 
   it('the first state expects a credibility-weighted mix of the target and current inflation', () => {
