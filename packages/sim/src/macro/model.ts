@@ -266,8 +266,9 @@ export function stepMacro(
   // The central bank plans to print its share of the government's financing need: the primary
   // deficit the budget sets, plus the interest bill, which swings with rates and the exchange rate
   // month by month and so is taken at its recent average. People form expectations from the plan.
-  // What it actually prints never exceeds the month's cash need (below). During an exclusion the
-  // government cannot borrow, and interest is capitalized, so a primary deficit is printed in full.
+  // What it actually prints never exceeds its legal share of the month's cash need (below). During
+  // an exclusion the government cannot borrow, and interest is capitalized, so a primary deficit is
+  // printed in full.
   const plannedPrinting = excluded
     ? Math.max(0, -policy.primaryBalance)
     : Math.max(0, state.interestBill - policy.primaryBalance) * policy.monetizedShare;
@@ -433,9 +434,9 @@ export function stepMacro(
   // central bank's plan and borrowed otherwise: interest on market and foreign debt rolls into
   // those stocks, the indexed debt's coupon into market debt. The central bank never prints more
   // than the need, so printing cannot buy back debt that inflation has already wiped out. During
-  // an exclusion interest is capitalized into each stock instead of paid. Printed money retires
-  // domestic debt first. A negative stock repays the other one, and net assets are held abroad, so
-  // domestic debt is never negative. Nothing is lost.
+  // an exclusion interest is capitalized into each stock instead of paid. A negative stock repays
+  // the other one, and net assets are held abroad, so domestic debt is never negative. Nothing is
+  // lost.
   const growth = (inflation + inputs.potentialGrowth) / 12;
   const indexedPrincipal = indexedDebt * Math.exp(inflation / 12 - growth);
   const indexedCoupon = indexedPrincipal * Math.expm1(worldRealRate / 12);
