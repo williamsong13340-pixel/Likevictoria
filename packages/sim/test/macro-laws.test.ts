@@ -649,6 +649,55 @@ describe('macro block: mechanisms', () => {
     );
   });
 
+  it('credibility counts the larger miss: from the target, or from the anchor believers hold', () => {
+    // Remembered inflation sits between the target and the anchor, nearer the target; people have
+    // taken in only part of this month's planned printing.
+    const params = { ...P, inflationMissPenalty: 2, monetizationCredibilityPenalty: 0 };
+    const above = 0.05;
+    const remembered = BASE_POLICY.inflationTarget + above;
+    const start = {
+      ...QUIET_STATE,
+      adaptiveExpectation: remembered,
+      interestBill: 0,
+      perceivedMonetization: 0.02,
+      credibility: 0.5,
+    };
+    const printer = { ...BASE_POLICY, primaryBalance: -0.04, monetizedShare: 1 };
+    const step = stepMacro(start, printer, QUIET_INPUTS, params);
+    const memory =
+      params.expectationHalfLifeMonths / (1 + params.expectationAttention * remembered);
+    const perceived = 0.04 + (0.02 - 0.04) * 2 ** (-1 / memory);
+    const moneyDemand = Math.max(
+      params.minMoneyDemand,
+      Math.exp(-params.moneyFlightSemiElasticity * remembered),
+    );
+    const anchor = (params.monetizationInflation * perceived) / moneyDemand;
+    expect(anchor).toBeGreaterThan(2 * above);
+    const miss = Math.max(above, anchor - above);
+    const target =
+      BASE_POLICY.baseCredibility -
+      params.inflationMissPenalty * (miss - params.inflationMissTolerance);
+    expect(target).toBeGreaterThan(params.minCredibility); // off the floor, so the miss shows
+    expect(step.state.credibility).toBeCloseTo(
+      target + (0.5 - target) * 2 ** (-1 / params.credibilityHalfLifeMonths),
+      12,
+    );
+  });
+
+  it('the run reports the planned printing apart from what is printed', () => {
+    // Fiscal dominance: by year six inflation has eaten much of the debt the plan's average
+    // interest was owed on.
+    const dominance = scenario('fiscal-dominance');
+    const run = runScenario({
+      ...dominance,
+      months: 61,
+      start: { ...dominance.start, domesticDebt: 0.5 },
+    });
+    const month = at(run, 60);
+    expect(month.plannedPrinting).toBeGreaterThan(2 * month.monetizedDeficit);
+    expect(month.monetizedDeficit).toBeGreaterThan(0);
+  });
+
   it('only heavy printing sustains a hyperinflation: money demand has a floor', () => {
     // Remembered inflation of 500% a year: money demand has fallen to its floor. Money demand
     // follows remembered inflation, not this month's expectation.
@@ -742,12 +791,71 @@ describe('macro block: mechanisms', () => {
     // Fully monetized, no foreign borrowing: the foreign debt changes only by revaluation.
     const owing = { ...QUIET_STATE, domesticDebt: 0.5, foreignDebt: 0.3, interestBill: 0.1 };
     const policy = { ...BASE_POLICY, monetizedShare: 1, foreignBorrowingShare: 0 };
+    const revalued = (step: MacroStep, debt: number): number =>
+      debt *
+      Math.exp(
+        step.state.logExchangeRate - (step.state.inflation + QUIET_INPUTS.potentialGrowth) / 12,
+      );
     const step = stepMacro(owing, policy, QUIET_INPUTS, P);
-    const growth = (step.state.inflation + QUIET_INPUTS.potentialGrowth) / 12;
-    expect(step.state.foreignDebt).toBeCloseTo(
-      0.3 * Math.exp(step.state.logExchangeRate - growth),
+    expect(step.state.foreignDebt).toBeCloseTo(revalued(step, 0.3), 12);
+    // Only what is left unprinted is borrowed: printed in full, a deficit adds nothing abroad even
+    // when all borrowing would be in foreign currency.
+    const abroad = { ...policy, primaryBalance: -0.05, foreignBorrowingShare: 1 };
+    const full = stepMacro(owing, abroad, QUIET_INPUTS, P);
+    expect(full.monetizedDeficit).toBeCloseTo(full.fiscalDeficit, 12);
+    expect(full.state.foreignDebt).toBeCloseTo(revalued(full, 0.3), 12);
+    // Printed up to the legal share although more was planned: half is borrowed abroad.
+    const capped = stepMacro(owing, { ...abroad, monetizedShare: 0.5 }, QUIET_INPUTS, P);
+    expect(capped.monetizedDeficit).toBeCloseTo(0.5 * capped.fiscalDeficit, 12);
+    expect(capped.plannedPrinting).toBeGreaterThan(capped.monetizedDeficit + 0.01);
+    expect(capped.state.foreignDebt).toBeCloseTo(revalued(capped, 0.3) + 0.5 * (0.05 / 12), 12);
+    // Printed in part (as far as the plan goes), the rest of the deficit is borrowed abroad.
+    const partly = stepMacro(
+      { ...owing, interestBill: 0 },
+      { ...abroad, monetizedShare: 0.5 },
+      QUIET_INPUTS,
+      P,
+    );
+    expect(partly.monetizedDeficit).toBeLessThan(0.5 * partly.fiscalDeficit - 0.01);
+    expect(partly.state.foreignDebt).toBeCloseTo(
+      revalued(partly, 0.3) + (1 - partly.monetizedDeficit / partly.fiscalDeficit) * (0.05 / 12),
       12,
     );
+    // Printing less than the interest due abroad: all of it goes abroad.
+    const heavy = { ...QUIET_STATE, domesticDebt: 0.2, foreignDebt: 0.8, interestBill: 0.2 };
+    const little = stepMacro(heavy, { ...policy, monetizedShare: 0.3 }, QUIET_INPUTS, P);
+    const rate = QUIET_INPUTS.anchorRate + little.riskPremium;
+    expect(little.monetizedDeficit).toBeLessThan(foreignInterest(little, 0.8, rate));
+    expect(little.state.foreignDebt).toBeCloseTo(
+      revalued(little, 0.8) * Math.exp(rate / 12) - little.monetizedDeficit / 12,
+      12,
+    );
+  });
+
+  it('during an exclusion foreign interest rolls over at the anchor rate, unpaid by printing', () => {
+    const excluded = {
+      ...QUIET_STATE,
+      marketExclusion: 12,
+      domesticDebt: 0.3,
+      indexedDebt: 0.3,
+      foreignDebt: 0.2,
+    };
+    const printer = { ...BASE_POLICY, primaryBalance: -0.02, monetizedShare: 0.5 };
+    const step = stepMacro(excluded, printer, QUIET_INPUTS, P);
+    expect(step.monetizedDeficit).toBeCloseTo(0.02, 12); // all of the primary deficit
+    const growth = (step.state.inflation + QUIET_INPUTS.potentialGrowth) / 12;
+    expect(step.state.foreignDebt).toBeCloseTo(
+      0.2 * Math.exp(QUIET_INPUTS.anchorRate / 12 - growth + step.state.logExchangeRate),
+      12,
+    );
+  });
+
+  it('a surplus that covers the interest leaves nothing to print', () => {
+    const owing = { ...QUIET_STATE, foreignDebt: 0.2, interestBill: 0 };
+    const saver = { ...BASE_POLICY, primaryBalance: 0.1, monetizedShare: 0.5 };
+    const step = stepMacro(owing, saver, QUIET_INPUTS, P);
+    expect(step.fiscalDeficit).toBeLessThan(0);
+    expect(step.monetizedDeficit).toBe(0);
   });
 
   it('the interest bill is planned on the debt owed when the month begins, foreign debt included', () => {

@@ -25,7 +25,7 @@ export interface MacroPolicy {
   readonly primaryBalance: number;
   /** Share of the fiscal deficit financed by the central bank. */
   readonly monetizedShare: number;
-  /** Share of new borrowing raised in the anchor currency. */
+  /** Share of the primary deficit left unprinted, and so borrowed, that is raised in the anchor currency. */
   readonly foreignBorrowingShare: number;
 }
 
@@ -134,7 +134,10 @@ export interface MacroStep {
    * planned for has meanwhile been inflated away, less is actually printed.
    */
   readonly plannedPrinting: number;
-  /** Money printed for the government: the plan, but never more than its legal share of the cash deficit. */
+  /**
+   * Money printed for the government: the plan, but never more than its legal share of the cash
+   * deficit (during an exclusion, all of it).
+   */
   readonly monetizedDeficit: number;
   /** Reserves ran out under a peg; the caller must move the country to a floating regime. */
   readonly pegCollapsed: boolean;
@@ -472,11 +475,13 @@ export function stepMacro(
     plannedPrinting,
     excluded ? cashNeed : policy.monetizedShare * cashNeed,
   );
-  // Printed money pays the interest due abroad first, so a fully monetized government does not
-  // turn its domestic debt into foreign debt; the rest retires domestic debt.
+  // Printed money pays the interest due abroad first; the rest retires domestic debt. Only what is
+  // left unprinted is borrowed, in foreign currency in the policy's share, so a fully monetized
+  // government neither turns its domestic debt into foreign debt nor borrows abroad.
   const paidAbroad = excluded ? 0 : Math.min(monetizedDeficit / 12, Math.max(0, foreignInterest));
+  const unprinted = cashNeed > 0 ? 1 - monetizedDeficit / cashNeed : 1;
   const primaryDeficit = -policy.primaryBalance / 12;
-  const foreignShare = excluded ? 0 : policy.foreignBorrowingShare;
+  const foreignShare = excluded ? 0 : policy.foreignBorrowingShare * unprinted;
   const accruedIndexed = indexedPrincipal + (excluded ? indexedCoupon : 0);
   const accruedDomestic =
     marketDebt * Math.exp(marketDebtRate / 12 - growth) +

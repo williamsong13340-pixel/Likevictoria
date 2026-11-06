@@ -54,6 +54,19 @@ describe('macro sandbox: table', () => {
     expect(cell('物价')).toBe('e^40');
   });
 
+  it('shows the planned printing and what is actually printed in their own columns', () => {
+    const yearEnd = records[11];
+    if (yearEnd === undefined) throw new Error('missing record');
+    const [header, line] = scenarioTable(
+      [{ ...yearEnd, plannedPrinting: 0.05, monetizedDeficit: 0.02 }],
+      true,
+    );
+    const row = columns(line);
+    const cell = (name: string): string | undefined => row[columns(header).indexOf(name)];
+    expect(cell('计划印钞')).toBe('5.0%');
+    expect(cell('实际印钞')).toBe('2.0%');
+  });
+
   it('marks events in the row of the period they fall in', () => {
     const withDefault = records.map((r) => (r.month === 30 ? { ...r, defaulted: true } : r));
     const lines = scenarioTable(withDefault, false);

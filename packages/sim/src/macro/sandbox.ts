@@ -31,7 +31,12 @@ export const POLICY_LIMITS: ParamSpecs<PolicyNumbers> = {
   governmentRate: { unit: '年率', min: -0.05, max: 1, meaning: '政府设定的政策利率' },
   primaryBalance: { unit: 'GDP比例', min: -0.2, max: 0.2, meaning: '基本财政盈余' },
   monetizedShare: { unit: '比例', min: 0, max: 1, meaning: '由央行印钞弥补的赤字比例' },
-  foreignBorrowingShare: { unit: '比例', min: 0, max: 1, meaning: '新借款中外币的比例' },
+  foreignBorrowingShare: {
+    unit: '比例',
+    min: 0,
+    max: 1,
+    meaning: '基本赤字中没有印钞、需要借入的部分里，外币借款的比例',
+  },
 };
 
 /** Valid starting conditions. */
