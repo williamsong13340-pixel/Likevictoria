@@ -46,10 +46,12 @@ describe('macro sandbox: table', () => {
       debt: 12345,
       logPriceLevel: 40,
     };
-    const row = columns(scenarioTable([crisis], true)[1]);
-    expect(row[2]).toBe('100.0%'); // ln 2 a year doubles prices
-    expect(row[13]).toBe('1.2e+6%');
-    expect(row[18]).toBe('e^40');
+    const [header, line] = scenarioTable([crisis], true);
+    const row = columns(line);
+    const cell = (name: string): string | undefined => row[columns(header).indexOf(name)];
+    expect(cell('当月(年化)')).toBe('100.0%'); // ln 2 a year doubles prices
+    expect(cell('债务')).toBe('1.2e+6%');
+    expect(cell('物价')).toBe('e^40');
   });
 
   it('marks events in the row of the period they fall in', () => {

@@ -30,6 +30,7 @@ import {
   type MonthRecord,
 } from '../src/macro/sandbox.ts';
 import { MACRO_SCENARIOS } from '../src/macro/scenarios.ts';
+import { OSCILLATION_CORNERS } from './oscillation-corners.ts';
 import type { ParamSpecs } from '../src/params.ts';
 
 const P = DEFAULT_MACRO_PARAMS;
@@ -609,6 +610,12 @@ describe('macro block: mechanisms', () => {
     const printed = stepMacro(QUIET_STATE, { ...deficit, monetizedShare: 1 }, QUIET_INPUTS, P);
     const borrowed = stepMacro(QUIET_STATE, deficit, QUIET_INPUTS, P);
     expect(printed.state.credibility).toBeLessThan(borrowed.state.credibility);
+    // Printing for interest alone costs it too.
+    const indebted = { ...QUIET_STATE, interestBill: 0.05 };
+    const balanced = { ...BASE_POLICY, primaryBalance: 0 };
+    const forInterest = stepMacro(indebted, { ...balanced, monetizedShare: 1 }, QUIET_INPUTS, P);
+    const paid = stepMacro(indebted, balanced, QUIET_INPUTS, P);
+    expect(forInterest.state.credibility).toBeLessThan(paid.state.credibility);
   });
 
   it('only heavy printing sustains a hyperinflation: money demand has a floor', () => {
@@ -637,14 +644,20 @@ describe('macro block: mechanisms', () => {
     const printer = { ...BASE_POLICY, primaryBalance: -0.02, monetizedShare: 0.5 };
     const steady = { ...QUIET_STATE, interestBill: 0.04 };
     const usual = stepMacro(steady, printer, QUIET_INPUTS, P);
-    expect(usual.monetizedDeficit).toBeCloseTo(0.5 * (0.04 + 0.02), 12);
+    expect(usual.plannedPrinting).toBeCloseTo(0.5 * (0.04 + 0.02), 12);
+    // What is printed never exceeds the legal share of the month's actual cash deficit.
+    expect(usual.monetizedDeficit).toBeCloseTo(
+      Math.min(usual.plannedPrinting, 0.5 * usual.fiscalDeficit),
+      12,
+    );
     // A bigger deficit in the budget is printed in the same month.
     const spending = stepMacro(steady, { ...printer, primaryBalance: -0.1 }, QUIET_INPUTS, P);
-    expect(spending.monetizedDeficit - usual.monetizedDeficit).toBeCloseTo(0.5 * 0.08, 12);
+    expect(spending.plannedPrinting - usual.plannedPrinting).toBeCloseTo(0.5 * 0.08, 12);
+    expect(spending.monetizedDeficit - usual.monetizedDeficit).toBeCloseTo(0.5 * 0.08, 3);
     // A jump in the interest bill reaches printing only through its average.
     const costly = stepMacro({ ...steady, effectiveDebtRate: 0.5 }, printer, QUIET_INPUTS, P);
     expect(costly.fiscalDeficit).toBeGreaterThan(usual.fiscalDeficit + 0.1);
-    expect(costly.monetizedDeficit).toBe(usual.monetizedDeficit);
+    expect(costly.plannedPrinting).toBe(usual.plannedPrinting);
     // The bill is planned on the debt owed when the month begins, at the month's rates.
     const moved = 1 - 2 ** (-1 / P.financingHalfLifeMonths);
     const planned = (step: MacroStep): number =>
@@ -690,7 +703,54 @@ describe('macro block: mechanisms', () => {
         P,
       ).monetizedDeficit;
     expect(printed(1)).toBeGreaterThan(0.02 + 0.8 * bill);
-    expect(printed(0.5)).toBeCloseTo(0.5 * (bill + 0.02), 12);
+    expect(printed(0.5) / printed(1)).toBeGreaterThan(0.49);
+    expect(printed(0.5) / printed(1)).toBeLessThan(0.51);
+  });
+
+  it('printed money pays the interest due abroad first', () => {
+    // Fully monetized, no foreign borrowing: the foreign debt changes only by revaluation.
+    const owing = { ...QUIET_STATE, domesticDebt: 0.5, foreignDebt: 0.3, interestBill: 0.1 };
+    const policy = { ...BASE_POLICY, monetizedShare: 1, foreignBorrowingShare: 0 };
+    const step = stepMacro(owing, policy, QUIET_INPUTS, P);
+    const growth = (step.state.inflation + QUIET_INPUTS.potentialGrowth) / 12;
+    expect(step.state.foreignDebt).toBeCloseTo(
+      0.3 * Math.exp(step.state.logExchangeRate - growth),
+      12,
+    );
+  });
+
+  it('the interest bill is planned on the debt owed when the month begins, foreign debt included', () => {
+    const moved = 1 - 2 ** (-1 / P.financingHalfLifeMonths);
+    const owing = {
+      ...QUIET_STATE,
+      domesticDebt: 0,
+      indexedDebt: 0,
+      foreignDebt: 1,
+      interestBill: 0,
+    };
+    const abroad = stepMacro(owing, BASE_POLICY, QUIET_INPUTS, P);
+    expect(abroad.state.interestBill).toBeCloseTo(
+      moved * 12 * Math.expm1((QUIET_INPUTS.anchorRate + abroad.riskPremium) / 12),
+      12,
+    );
+    // Restructured debt: the real coupon on what has not matured, the market rate on what has.
+    const reopened = { ...QUIET_STATE, domesticDebt: 0.8, indexedDebt: 0.8, interestBill: 0 };
+    const step = stepMacro(reopened, BASE_POLICY, QUIET_INPUTS, P);
+    const stays = 2 ** (-1 / P.debtRepricingHalfLifeMonths);
+    const worldRealRate = QUIET_INPUTS.anchorRate - QUIET_INPUTS.anchorInflation;
+    expect(step.state.interestBill).toBeCloseTo(
+      moved *
+        12 *
+        (0.8 * (1 - stays) * Math.expm1(step.state.effectiveDebtRate / 12) +
+          0.8 * stays * Math.expm1(worldRealRate / 12)),
+      12,
+    );
+    // During an exclusion nothing is paid in cash, so the bill fades.
+    const excluded = { ...reopened, marketExclusion: 12, interestBill: 0.1 };
+    expect(stepMacro(excluded, BASE_POLICY, QUIET_INPUTS, P).state.interestBill).toBeCloseTo(
+      0.1 * (1 - moved),
+      12,
+    );
   });
 
   it('printing never makes a government a net creditor, even when inflation wipes its debt out', () => {
@@ -1091,8 +1151,10 @@ describe('macro block: mechanisms', () => {
     };
     const tight = { ...P, maxInflation: 1 };
     const first = initialMacroState(start, BASE_POLICY, QUIET_INPUTS, tight);
+    expect(first).toEqual(
+      initialMacroState({ ...start, inflation: 1 }, BASE_POLICY, QUIET_INPUTS, tight),
+    );
     expect(first.inflation).toBe(1);
-    expect(first.adaptiveExpectation).toBe(1);
   });
 
   it('until the market reopens, debt cannot climb back above its restructured level', () => {
@@ -1255,7 +1317,8 @@ describe('macro block: mechanisms', () => {
     const risky = { ...QUIET_INPUTS, politicalRiskPremium: 0.1 };
     const first = initialMacroState(start, BASE_POLICY, risky, P);
     expect(first.interestBill).toBeCloseTo(
-      first.effectiveDebtRate * 0.5 - QUIET_INPUTS.anchorRate,
+      12 *
+        (0.5 * Math.expm1(first.effectiveDebtRate / 12) - Math.expm1(QUIET_INPUTS.anchorRate / 12)),
       12,
     );
     expect(first.marketRefinancing).toBeCloseTo(
@@ -1473,24 +1536,20 @@ describe('macro block: numerical safety over every documented range', () => {
   it('the exchange-rate and printing loop stays damped where it once oscillated', () => {
     // Corners from earlier reviews: net foreign assets revalued every month swung the deficit,
     // and with it the printing, when the central bank planned on this month's exchange rate.
-    const corners: readonly (readonly [number, string])[] = [
-      [8, 'peg-closed-capital, endpoints parameter set 5, plan 1'],
-      [22, 'peg-closed-capital, mixed parameter set 5, plan 1'],
-      [45, 'baseline, mixed parameter set 2, plan 1'],
-      [95, 'peg-closed-capital, endpoints parameter set 5, plan 1'],
-    ];
-    for (const [seed, corner] of corners) {
-      const found = [...propertyCases(seed)].find((c) => c.where === corner);
-      expect(found, corner).toBeDefined();
-      if (found !== undefined) {
-        const { plan, macro, demand } = found;
-        expectSafe(
-          runScenario(plan, macro, demand),
-          macro,
-          demand,
-          `seed ${String(seed)}, ${corner}`,
-        );
-      }
+    for (const corner of OSCILLATION_CORNERS) {
+      const base = scenario(corner.scenario);
+      const plan = {
+        ...base,
+        months: 1200,
+        policy: corner.policy,
+        policyChanges: [...base.policyChanges, corner.change],
+      };
+      expectSafe(
+        runScenario(plan, corner.macro, corner.demand),
+        corner.macro,
+        corner.demand,
+        corner.name,
+      );
     }
   });
 });

@@ -112,6 +112,7 @@ export interface MonthRecord {
   readonly debt: number;
   readonly foreignDebt: number;
   readonly fiscalDeficit: number;
+  readonly plannedPrinting: number;
   readonly monetizedDeficit: number;
   readonly riskPremium: number;
   readonly logPriceLevel: number;
@@ -192,6 +193,7 @@ export function runScenario(
       debt: state.domesticDebt + state.foreignDebt,
       foreignDebt: state.foreignDebt,
       fiscalDeficit: step.fiscalDeficit,
+      plannedPrinting: step.plannedPrinting,
       monetizedDeficit: step.monetizedDeficit,
       riskPremium: step.riskPremium,
       logPriceLevel: state.logPriceLevel,

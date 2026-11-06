@@ -167,7 +167,7 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
     min: 3,
     max: 24,
     meaning:
-      '央行按预算中的基本赤字加上近几个月的平均利息支出印钞：利息随利率和汇率逐月波动，印钞机不会跟着开开关关',
+      '央行按预算中的基本赤字加上近几个月的平均利息支出计划印钞：利息随利率和汇率逐月波动，计划不会跟着开开关关；实际印钞不超过当月现金赤字的货币化比例',
   },
   moneyFlightSemiElasticity: {
     unit: '1/通胀',

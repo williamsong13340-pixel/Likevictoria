@@ -114,7 +114,7 @@ export const MACRO_SCENARIOS: readonly MacroScenario[] = [
     id: 'hyperinflation',
     title: '恶性通胀',
     lesson:
-      '为 6% GDP 的赤字全额印钞并压低利率：超过铸币税上限后通胀自我加速，第 3 年超过 100%，第 4 年失控，信誉崩溃，经济最终陷入深度衰退；本币债务被稀释殆尽，外币债务却从 10% 涨到约 28%。',
+      '为 6% GDP 的赤字全额印钞并压低利率：超过铸币税上限后通胀自我加速，第 3 年超过 100%，第 4 年失控，信誉崩溃，经济最终陷入深度衰退；本币债务被稀释殆尽，外币债务却从 10% 涨到约 23%。',
     months: 60,
     start: { ...STEADY_START, credibility: 0.3, domesticDebt: 0.2, foreignDebt: 0.1 },
     policy: { ...BASE_POLICY, ...GOVERNMENT_CB, primaryBalance: -0.06, monetizedShare: 1 },

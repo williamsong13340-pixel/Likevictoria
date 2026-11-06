@@ -129,7 +129,12 @@ export interface MacroStep {
    * exclusion interest is capitalized, so only the primary deficit counts.
    */
   readonly fiscalDeficit: number;
-  /** Money printed for the government: its planned share, never more than the cash deficit. */
+  /**
+   * Money the central bank plans to print. Expectations follow the plan; when the debt it was
+   * planned for has meanwhile been inflated away, less is actually printed.
+   */
+  readonly plannedPrinting: number;
+  /** Money printed for the government: the plan, but never more than its legal share of the cash deficit. */
   readonly monetizedDeficit: number;
   /** Reserves ran out under a peg; the caller must move the country to a floating regime. */
   readonly pegCollapsed: boolean;
@@ -219,8 +224,10 @@ export function initialMacroState(
     credibility: start.credibility,
     policyRate,
     interestBill:
-      effectiveDebtRate * start.domesticDebt +
-      foreignDebtRateOf(start.foreignDebt, riskPremium, inputs.anchorRate) * start.foreignDebt,
+      12 *
+      (start.domesticDebt * Math.expm1(effectiveDebtRate / 12) +
+        start.foreignDebt *
+          Math.expm1(foreignDebtRateOf(start.foreignDebt, riskPremium, inputs.anchorRate) / 12)),
     policyStance,
     logExchangeRate: 0,
     realExchangeRate: 0,
@@ -432,10 +439,12 @@ export function stepMacro(
   const growth = (inflation + inputs.potentialGrowth) / 12;
   const indexedPrincipal = indexedDebt * Math.exp(inflation / 12 - growth);
   const indexedCoupon = indexedPrincipal * Math.expm1(worldRealRate / 12);
+  const foreignInterest =
+    state.foreignDebt * Math.expm1(foreignDebtRate / 12) * Math.exp(depreciation - growth);
   const monthInterest =
     marketDebt * Math.expm1(marketDebtRate / 12) * Math.exp(-growth) +
     indexedCoupon +
-    state.foreignDebt * Math.expm1(foreignDebtRate / 12) * Math.exp(depreciation - growth);
+    foreignInterest;
   const interest = excluded ? 0 : 12 * monthInterest;
   // The central bank plans with what it knows when the month begins: the debt it owes then, at the
   // month's rates, before this month's inflation and exchange rate move the debt's share of GDP.
@@ -446,7 +455,17 @@ export function stepMacro(
       (marketDebt * Math.expm1(marketDebtRate / 12) +
         indexedDebt * Math.expm1(worldRealRate / 12) +
         state.foreignDebt * Math.expm1(foreignDebtRate / 12));
-  const monetizedDeficit = Math.min(plannedPrinting, Math.max(0, interest - policy.primaryBalance));
+  // What it prints is at most its legal share of the month's actual cash need (all of it during
+  // an exclusion), so at high inflation, when the planned interest overstates the need, it does
+  // not end up printing more than the law allows.
+  const cashNeed = Math.max(0, interest - policy.primaryBalance);
+  const monetizedDeficit = Math.min(
+    plannedPrinting,
+    excluded ? cashNeed : policy.monetizedShare * cashNeed,
+  );
+  // Printed money pays the interest due abroad first, so a fully monetized government does not
+  // turn its domestic debt into foreign debt; the rest retires domestic debt.
+  const paidAbroad = excluded ? 0 : Math.min(monetizedDeficit / 12, Math.max(0, foreignInterest));
   const primaryDeficit = -policy.primaryBalance / 12;
   const foreignShare = excluded ? 0 : policy.foreignBorrowingShare;
   const accruedIndexed = indexedPrincipal + (excluded ? indexedCoupon : 0);
@@ -455,10 +474,11 @@ export function stepMacro(
     (excluded ? 0 : indexedCoupon) +
     accruedIndexed +
     (1 - foreignShare) * primaryDeficit -
-    monetizedDeficit / 12;
+    (monetizedDeficit / 12 - paidAbroad);
   const accruedForeign =
     state.foreignDebt * Math.exp(foreignDebtRate / 12 - growth + depreciation) +
-    foreignShare * primaryDeficit;
+    foreignShare * primaryDeficit -
+    paidAbroad;
   const totalDebt = accruedDomestic + accruedForeign;
   const foreignDebt =
     totalDebt < 0 || accruedDomestic < 0 ? totalDebt : Math.max(0, accruedForeign);
@@ -503,6 +523,7 @@ export function stepMacro(
     capitalFlow,
     financingGap,
     fiscalDeficit: interest - policy.primaryBalance,
+    plannedPrinting,
     monetizedDeficit,
     pegCollapsed,
     defaulted,

@@ -30,7 +30,8 @@ const COLUMNS: readonly Column[] = [
   ['债务', (r) => share(r.debt)],
   ['其中外债', (r) => share(r.foreignDebt)],
   ['赤字', (r) => share(r.fiscalDeficit)],
-  ['印钞', (r) => share(r.monetizedDeficit)],
+  ['计划印钞', (r) => share(r.plannedPrinting)],
+  ['实际印钞', (r) => share(r.monetizedDeficit)],
   ['风险溢价', (r) => rate(r.riskPremium)],
   ['物价', (r) => level(r.logPriceLevel)],
 ];
