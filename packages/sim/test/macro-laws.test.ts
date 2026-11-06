@@ -577,6 +577,15 @@ describe('macro block: mechanisms', () => {
     );
   });
 
+  it("a government without market debt borrows at this month's market rate, not a stale one", () => {
+    const debtFree = { ...QUIET_STATE, domesticDebt: 0, indexedDebt: 0, effectiveDebtRate: 0.9 };
+    const step = stepMacro(debtFree, BASE_POLICY, QUIET_INPUTS, P);
+    expect(step.state.effectiveDebtRate).toBeCloseTo(
+      step.state.policyRate + step.riskPremium + P.termPremium,
+      12,
+    );
+  });
+
   it('once inflation has wiped out the domestic debt, only the budget deficit is printed', () => {
     const printer = { ...BASE_POLICY, primaryBalance: -0.02, monetizedShare: 1 };
     const stale = { ...QUIET_STATE, interestBill: 0.5, indexedDebt: 0 };
