@@ -606,15 +606,22 @@ describe('macro block: mechanisms', () => {
   });
 
   it('printing money costs credibility', () => {
+    // Even when nobody expects it to raise inflation, so the record cannot be what costs it.
+    const params = { ...P, monetizationInflation: 0 };
     const deficit = { ...BASE_POLICY, primaryBalance: -0.05 };
-    const printed = stepMacro(QUIET_STATE, { ...deficit, monetizedShare: 1 }, QUIET_INPUTS, P);
-    const borrowed = stepMacro(QUIET_STATE, deficit, QUIET_INPUTS, P);
+    const printed = stepMacro(QUIET_STATE, { ...deficit, monetizedShare: 1 }, QUIET_INPUTS, params);
+    const borrowed = stepMacro(QUIET_STATE, deficit, QUIET_INPUTS, params);
     expect(printed.state.credibility).toBeLessThan(borrowed.state.credibility);
     // Printing for interest alone costs it too.
     const indebted = { ...QUIET_STATE, interestBill: 0.05 };
     const balanced = { ...BASE_POLICY, primaryBalance: 0 };
-    const forInterest = stepMacro(indebted, { ...balanced, monetizedShare: 1 }, QUIET_INPUTS, P);
-    const paid = stepMacro(indebted, balanced, QUIET_INPUTS, P);
+    const forInterest = stepMacro(
+      indebted,
+      { ...balanced, monetizedShare: 1 },
+      QUIET_INPUTS,
+      params,
+    );
+    const paid = stepMacro(indebted, balanced, QUIET_INPUTS, params);
     expect(forInterest.state.credibility).toBeLessThan(paid.state.credibility);
   });
 
