@@ -926,6 +926,8 @@ describe('macro block: mechanisms', () => {
     );
     expect(step.defaulted).toBe(true);
     expect(step.state.domesticDebt + step.state.foreignDebt).toBeCloseTo(RESTRUCTURED_DEBT, 12);
+    // From the default on, the restructured domestic debt is indexed.
+    expect(step.state.indexedDebt).toBe(step.state.domesticDebt);
     expect(step.state.marketExclusion).toBe(P.marketExclusionMonths);
     expect(step.state.reputationPremium).toBe(P.defaultReputationPremium);
   });
