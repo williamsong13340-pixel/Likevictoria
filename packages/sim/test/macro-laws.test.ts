@@ -832,7 +832,7 @@ describe('macro block: mechanisms', () => {
     );
   });
 
-  it('during an exclusion foreign interest rolls over at the anchor rate, unpaid by printing', () => {
+  it('during an exclusion foreign debt rolls over at the anchor rate, neither paid nor added to', () => {
     const excluded = {
       ...QUIET_STATE,
       marketExclusion: 12,
@@ -840,14 +840,22 @@ describe('macro block: mechanisms', () => {
       indexedDebt: 0.3,
       foreignDebt: 0.2,
     };
+    const rolled = (step: MacroStep): number =>
+      0.2 *
+      Math.exp(
+        QUIET_INPUTS.anchorRate / 12 -
+          (step.state.inflation + QUIET_INPUTS.potentialGrowth) / 12 +
+          step.state.logExchangeRate,
+      );
+    // Printed money does not pay it: the whole primary deficit is printed and stays at home.
     const printer = { ...BASE_POLICY, primaryBalance: -0.02, monetizedShare: 0.5 };
     const step = stepMacro(excluded, printer, QUIET_INPUTS, P);
-    expect(step.monetizedDeficit).toBeCloseTo(0.02, 12); // all of the primary deficit
-    const growth = (step.state.inflation + QUIET_INPUTS.potentialGrowth) / 12;
-    expect(step.state.foreignDebt).toBeCloseTo(
-      0.2 * Math.exp(QUIET_INPUTS.anchorRate / 12 - growth + step.state.logExchangeRate),
-      12,
-    );
+    expect(step.monetizedDeficit).toBeCloseTo(0.02, 12);
+    expect(step.state.foreignDebt).toBeCloseTo(rolled(step), 12);
+    // Nor does a surplus repay it, whatever share of borrowing would otherwise be abroad.
+    const saver = { ...printer, primaryBalance: 0.02, foreignBorrowingShare: 1 };
+    const saving = stepMacro(excluded, saver, QUIET_INPUTS, P);
+    expect(saving.state.foreignDebt).toBeCloseTo(rolled(saving), 12);
   });
 
   it('a surplus that covers the interest leaves nothing to print', () => {
