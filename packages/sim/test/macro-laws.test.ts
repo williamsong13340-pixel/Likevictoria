@@ -20,6 +20,7 @@ import {
   type MacroInputs,
   type MacroPolicy,
   type MacroState,
+  type MacroStep,
 } from '../src/macro/model.ts';
 import { DEFAULT_MACRO_PARAMS, MACRO_PARAM_SPECS, type MacroParams } from '../src/macro/params.ts';
 import {
@@ -576,6 +577,28 @@ describe('macro block: mechanisms', () => {
     );
   });
 
+  it('once inflation has wiped out the domestic debt, only the budget deficit is printed', () => {
+    const printer = { ...BASE_POLICY, primaryBalance: -0.02, monetizedShare: 1 };
+    const stale = { ...QUIET_STATE, interestBill: 0.5, indexedDebt: 0 };
+    const none = stepMacro({ ...stale, domesticDebt: 0 }, printer, QUIET_INPUTS, P);
+    expect(none.monetizedDeficit).toBeCloseTo(0.02, 12);
+    const little = stepMacro({ ...stale, domesticDebt: 0.001 }, printer, QUIET_INPUTS, P);
+    expect(little.monetizedDeficit).toBeCloseTo(0.02 + 12 * 0.001, 12);
+  });
+
+  it('a government that prints after the market reopens does not end up a net creditor', () => {
+    const plan = { ...scenario('debt-spiral'), months: 300 };
+    const first = defaultMonths(runScenario(plan))[0] ?? -1;
+    expect(first).toBeGreaterThan(0);
+    const reopening = first + 1 + P.marketExclusionMonths;
+    const printing = runScenario({
+      ...plan,
+      policyChanges: [...plan.policyChanges, { month: reopening, policy: { monetizedShare: 1 } }],
+    });
+    expect(Math.max(...printing.map((x) => x.monetizedDeficit))).toBeGreaterThan(0.05);
+    expect(Math.min(...printing.map((x) => x.debt))).toBeGreaterThanOrEqual(0);
+  });
+
   it('the risk premium saturates', () => {
     const step = stepMacro(
       { ...QUIET_STATE, domesticDebt: 1.4 },
@@ -744,18 +767,13 @@ describe('macro block: mechanisms', () => {
       const growth = (step.state.inflation + inputs.potentialGrowth) / 12;
       const depreciation = step.state.logExchangeRate - state.logExchangeRate;
       const premium = excluded || state.foreignDebt < 0 ? 0 : step.riskPremium;
-      // Indexed debt that has not matured pays the anchor's real rate plus this month's
-      // inflation; the rest of the domestic debt pays the market-debt rate.
+      // Indexed debt that has not matured grows with this month's inflation and the anchor's real
+      // rate; the rest of the domestic debt pays the market-debt rate. Each part compounds on its own.
       const indexedRate = step.state.inflation + inputs.anchorRate - inputs.anchorInflation;
       const indexed = state.indexedDebt * (excluded ? 1 : 1 - matured);
-      const domesticRate =
-        state.domesticDebt > 0
-          ? (indexed * indexedRate +
-              (state.domesticDebt - indexed) * step.state.effectiveDebtRate) /
-            state.domesticDebt
-          : 0;
       const expected =
-        state.domesticDebt * Math.exp(domesticRate / 12 - growth) +
+        (state.domesticDebt - indexed) * Math.exp(step.state.effectiveDebtRate / 12 - growth) +
+        indexed * Math.exp(indexedRate / 12 - growth) +
         state.foreignDebt * Math.exp((inputs.anchorRate + premium) / 12 - growth + depreciation) -
         policy.primaryBalance / 12 -
         step.monetizedDeficit / 12;
@@ -856,22 +874,33 @@ describe('macro block: mechanisms', () => {
     // What matured was refinanced at this month's market rate, whatever the old coupons were.
     const marketRate = step.state.policyRate + step.riskPremium + P.termPremium;
     expect(step.state.effectiveDebtRate).toBeCloseTo(marketRate, 12);
+    // In cash, indexed debt pays only the anchor's real rate; inflation is added to its principal.
+    const worldRealRate = QUIET_INPUTS.anchorRate - QUIET_INPUTS.anchorInflation;
     expect(step.fiscalDeficit).toBeCloseTo(
-      0.8 * (stays * indexedRate + (1 - stays) * marketRate) - BASE_POLICY.primaryBalance,
+      0.8 * (stays * worldRealRate + (1 - stays) * marketRate) - BASE_POLICY.primaryBalance,
       12,
     );
   });
 
-  it('market debt reprices faster when inflation is high, since new debt is issued short', () => {
-    const repricedShare = (adaptiveExpectation: number): number => {
-      const state = { ...QUIET_STATE, adaptiveExpectation, effectiveDebtRate: 0.5 };
-      const step = stepMacro(state, BASE_POLICY, QUIET_INPUTS, P);
-      const marketRate = step.state.policyRate + step.riskPremium + P.termPremium;
-      return (0.5 - step.state.effectiveDebtRate) / (0.5 - marketRate);
-    };
-    expect(repricedShare(0)).toBeCloseTo(1 - 2 ** (-1 / P.debtRepricingHalfLifeMonths), 12);
-    const horizon = 1 + P.expectationAttention * 1;
-    expect(repricedShare(1)).toBeCloseTo(1 - 2 ** (-horizon / P.debtRepricingHalfLifeMonths), 12);
+  it('new debt is issued shorter when inflation is high, and the stock follows as old debt matures', () => {
+    const usual = 1 - 2 ** (-1 / P.debtRepricingHalfLifeMonths);
+    const step = (adaptiveExpectation: number): MacroStep =>
+      stepMacro(
+        { ...QUIET_STATE, adaptiveExpectation, effectiveDebtRate: 0.5, marketRefinancing: usual },
+        BASE_POLICY,
+        QUIET_INPUTS,
+        P,
+      );
+    // The stock reprices at the pace of the debt outstanding, whatever inflation is now.
+    for (const remembered of [0, 1]) {
+      const s = step(remembered);
+      const marketRate = s.state.policyRate + s.riskPremium + P.termPremium;
+      expect(s.state.effectiveDebtRate).toBeCloseTo(0.5 + usual * (marketRate - 0.5), 12);
+    }
+    // What is refinanced is issued at the maturity of new debt, shorter when inflation is high.
+    const short = 1 - 2 ** (-(1 + P.expectationAttention) / P.debtRepricingHalfLifeMonths);
+    expect(step(1).state.marketRefinancing).toBeCloseTo((1 - usual) * usual + usual * short, 12);
+    expect(step(0).state.marketRefinancing).toBeCloseTo(usual, 12);
   });
 
   it('the debt does not jump when the market reopens after an exclusion financed by printing', () => {

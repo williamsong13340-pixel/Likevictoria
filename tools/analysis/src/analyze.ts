@@ -155,11 +155,13 @@ function mayBeThenable(checker: ts.TypeChecker, node: ts.Node): boolean {
   return (type.isUnion() ? type.types : [type]).some((t) => t.getProperty('then') !== undefined);
 }
 
-/** Whether every value of this expression's type is a promise; an `any` value is taken to be one. */
+/**
+ * Whether every value of this expression's type is a promise; an `any` value is taken to be one,
+ * an `unknown` one is not (it has no `then`).
+ */
 function isThenable(checker: ts.TypeChecker, node: ts.Node): boolean {
   const type = checker.getTypeAtLocation(node);
   if ((type.flags & ts.TypeFlags.Any) !== 0) return true;
-  if ((type.flags & ts.TypeFlags.Unknown) !== 0) return false;
   return (type.isUnion() ? type.types : [type]).every((t) => t.getProperty('then') !== undefined);
 }
 
