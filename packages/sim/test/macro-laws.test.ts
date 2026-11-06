@@ -618,6 +618,30 @@ describe('macro block: mechanisms', () => {
     expect(forInterest.state.credibility).toBeLessThan(paid.state.credibility);
   });
 
+  it('a central bank that prints gains no credibility from inflation that happens to sit at its target', () => {
+    // Printing itself costs no credibility here, and remembered inflation sits at the target: only
+    // the inflation that believers expect from the printing holds credibility back.
+    const params = { ...P, monetizationCredibilityPenalty: 0 };
+    const deficit = { ...BASE_POLICY, primaryBalance: -0.3 };
+    const printed = stepMacro(QUIET_STATE, { ...deficit, monetizedShare: 1 }, QUIET_INPUTS, params);
+    const borrowed = stepMacro(QUIET_STATE, deficit, QUIET_INPUTS, params);
+    expect(borrowed.state.credibility).toBe(BASE_POLICY.baseCredibility);
+    expect(printed.state.credibility).toBeLessThan(BASE_POLICY.baseCredibility);
+    // Nor from inflation that matches what its printing implies but misses the target. Money
+    // demand does not fall here, and the printing people perceive is already the plan.
+    const steady = { ...params, moneyFlightSemiElasticity: 0 };
+    const matched = {
+      ...QUIET_STATE,
+      interestBill: 0,
+      perceivedMonetization: 0.05,
+      adaptiveExpectation: BASE_POLICY.inflationTarget + steady.monetizationInflation * 0.05,
+    };
+    const printer = { ...BASE_POLICY, primaryBalance: -0.05, monetizedShare: 1 };
+    expect(stepMacro(matched, printer, QUIET_INPUTS, steady).state.credibility).toBeLessThan(
+      BASE_POLICY.baseCredibility,
+    );
+  });
+
   it('only heavy printing sustains a hyperinflation: money demand has a floor', () => {
     // Remembered inflation of 500% a year: money demand has fallen to its floor. Money demand
     // follows remembered inflation, not this month's expectation.
@@ -1533,9 +1557,11 @@ describe('macro block: numerical safety over every documented range', () => {
     }
   }, 60_000);
 
-  it('the exchange-rate and printing loop stays damped where it once oscillated', () => {
+  it('loops stay damped where they once oscillated', () => {
     // Corners from earlier reviews: net foreign assets revalued every month swung the deficit,
-    // and with it the printing, when the central bank planned on this month's exchange rate.
+    // and with it the printing, when the central bank planned on this month's exchange rate; and
+    // credibility judged on the target alone rose whenever inflation neared it, lifting
+    // expectations toward the printing anchor.
     for (const corner of OSCILLATION_CORNERS) {
       const base = scenario(corner.scenario);
       const plan = {

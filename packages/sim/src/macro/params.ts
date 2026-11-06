@@ -124,7 +124,8 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
     unit: '年率',
     min: 0,
     max: 0.1,
-    meaning: '记忆中的通胀偏离目标多少以内不损害信誉',
+    meaning:
+      '记忆中的通胀偏离目标多少以内不损害信誉（央行印钞时，同样不能偏离"目标加印钞带来的通胀"太远）',
   },
   inflationMissPenalty: {
     unit: '信誉/偏离',

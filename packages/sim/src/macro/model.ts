@@ -273,17 +273,6 @@ export function stepMacro(
     ? Math.max(0, -policy.primaryBalance)
     : Math.max(0, state.interestBill - policy.primaryBalance) * policy.monetizedShare;
 
-  // Credibility is earned by track record: it is judged on remembered inflation.
-  const inflationMiss = Math.abs(state.adaptiveExpectation - policy.inflationTarget);
-  const credibilityTarget = clamp(
-    policy.baseCredibility -
-      p.inflationMissPenalty * Math.max(0, inflationMiss - p.inflationMissTolerance) -
-      p.monetizationCredibilityPenalty * plannedPrinting,
-    p.minCredibility,
-    1,
-  );
-  const credibility = approach(state.credibility, credibilityTarget, p.credibilityHalfLifeMonths);
-
   // Money-financed deficits move the nominal anchor itself (quantity theory), and money demand
   // shrinks as inflation rises (Cagan), so beyond the seigniorage limit inflation runs away. Money
   // demand never falls below a floor, so only heavy printing can sustain a hyperinflation. People
@@ -303,6 +292,25 @@ export function stepMacro(
     p.maxInflation,
     (p.monetizationInflation * perceivedMonetization) / moneyDemand,
   );
+
+  // Credibility is earned by track record: it is judged on remembered inflation. Those who trust
+  // the central bank expect its target plus the inflation its printing implies, so remembered
+  // inflation has to be close to both: a central bank that prints heavily gains no credibility
+  // when inflation happens to sit at its target. (Judged on the target alone, trust would rise as
+  // inflation neared the target, lift expectations toward the printing anchor and push inflation
+  // away again, in a cycle.)
+  const inflationMiss = Math.max(
+    Math.abs(state.adaptiveExpectation - policy.inflationTarget),
+    Math.abs(state.adaptiveExpectation - policy.inflationTarget - monetaryInflation),
+  );
+  const credibilityTarget = clamp(
+    policy.baseCredibility -
+      p.inflationMissPenalty * Math.max(0, inflationMiss - p.inflationMissTolerance) -
+      p.monetizationCredibilityPenalty * plannedPrinting,
+    p.minCredibility,
+    1,
+  );
+  const credibility = approach(state.credibility, credibilityTarget, p.credibilityHalfLifeMonths);
   const expectedInflation =
     credibility * (policy.inflationTarget + monetaryInflation) +
     (1 - credibility) * state.adaptiveExpectation;
