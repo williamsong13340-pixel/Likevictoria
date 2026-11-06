@@ -105,7 +105,8 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
     unit: '1/通胀',
     min: 0,
     max: 20,
-    meaning: '通胀越高，人们越关注物价：记忆中的通胀每高 1.00，预期调整速度提高的倍数',
+    meaning:
+      '通胀越高，人们越关注物价，也只肯短期放贷：记忆中的通胀每高 1.00，预期的调整速度与债务的重新定价速度提高的倍数',
   },
   minCredibility: {
     unit: '0—1',
@@ -115,9 +116,9 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   },
   credibilityHalfLifeMonths: {
     unit: '月',
-    min: 1,
+    min: 6,
     max: 120,
-    meaning: '信誉建立或丧失的半衰期',
+    meaning: '信誉建立或丧失的半衰期：声誉要靠几个月以上的记录建立，也不会在一个月里丧失一半',
   },
   inflationMissTolerance: {
     unit: '年率',
@@ -151,7 +152,7 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
   },
   passThroughHalfLifeMonths: {
     unit: '月',
-    min: 2,
+    min: 3,
     max: 24,
     meaning: '汇率传导的半衰期：进口价格变化需要多久才有一半传到消费物价',
   },
@@ -166,7 +167,7 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
     min: 3,
     max: 24,
     meaning:
-      '央行按政府近几个月的平均融资需求印钞：预算按年编制，印钞机不会随每个月的现金流开开关关',
+      '央行按预算中的基本赤字加上近几个月的平均利息支出印钞：利息随利率和汇率逐月波动，印钞机不会跟着开开关关',
   },
   moneyFlightSemiElasticity: {
     unit: '1/通胀',
@@ -312,7 +313,7 @@ export const MACRO_PARAM_SPECS: ParamSpecs<MacroParams> = {
     unit: '月',
     min: 1,
     max: 240,
-    meaning: '国债平均利率向市场利率调整的半衰期（约等于平均期限 × 0.7）',
+    meaning: '通胀低时，国债平均利率向市场利率调整的半衰期（约等于平均期限 × 0.7）；通胀越高越短',
   },
   defaultDebtThreshold: {
     unit: 'GDP比例',

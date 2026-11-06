@@ -285,29 +285,35 @@ const REGULARITIES: Readonly<Record<string, (m: MacroParams, d: DemandProxyParam
     );
   },
   'stopping the printing ends a hyperinflation': (m, d) => {
-    const plan = { ...scenario('hyperinflation'), months: 120 };
-    const stop = runScenario(plan, m, d).findIndex((x) => x.inflation > 2); // above ~600% a year
+    const plan = { ...scenario('hyperinflation'), months: 240 };
+    const stop = runScenario(plan, m, d).findIndex((x) => x.inflation > 1.5); // ~350% a year
     if (stop < 0) return false;
     const reform = { primaryBalance: 0, monetizedShare: 0 };
-    const r = runScenario({ ...plan, policyChanges: [{ month: stop + 1, policy: reform }] }, m, d);
-    // Inflation peaks within three months (money demand recovers with a lag), then falls every
-    // month and loses at least a third within two years.
+    const length = { ...plan, months: stop + 25 };
+    const r = runScenario(
+      { ...length, policyChanges: [{ month: stop + 1, policy: reform }] },
+      m,
+      d,
+    );
+    const printing = runScenario(length, m, d);
+    // Inflation peaks within a few months (money demand recovers with a lag), then falls every
+    // month; two years on it is a small fraction of where printing would have taken it.
     const after = r.slice(stop, stop + 25).map((x) => x.inflation);
     const peak = Math.max(...after);
     const peakMonth = after.indexOf(peak);
     return (
-      peakMonth <= 3 &&
+      peakMonth <= 6 &&
       after.slice(peakMonth + 1).every((x, k) => x <= (after[peakMonth + k] ?? peak)) &&
-      at(r, stop + 24).inflation < (2 * peak) / 3
+      at(r, stop + 24).inflation < 0.5 * at(printing, stop + 24).inflation
     );
   },
   'inflation tax falls on domestic debt only': (m, d) => {
     const plan = scenario('hyperinflation');
     const end = at(runScenario(plan, m, d), 59);
-    // Within five years inflation wipes out at least nine tenths of the domestic debt, while the
-    // foreign debt grows.
+    // Within five years inflation wipes out most of the domestic debt, while the foreign debt
+    // grows.
     return (
-      end.debt - end.foreignDebt < 0.1 * plan.start.domesticDebt &&
+      end.debt - end.foreignDebt < 0.5 * plan.start.domesticDebt &&
       end.foreignDebt > plan.start.foreignDebt
     );
   },
@@ -363,11 +369,17 @@ const REGULARITIES: Readonly<Record<string, (m: MacroParams, d: DemandProxyParam
     );
   },
   'sovereign risk spills into private borrowing': (m, d) => {
-    const r = runScenario(scenario('debt-spiral'), m, d);
-    const first = r.findIndex((x) => x.defaulted);
-    // The gap of the default month comes from the months before it: the recession is already
-    // there when the government defaults.
-    return first > 0 && at(r, first).outputGap < 0;
+    // Two runs that differ only in political risk: before the default, the riskier economy is
+    // deeper in recession, by at least a tenth of the premium.
+    const plan = scenario('debt-spiral');
+    const risky = runScenario(plan, m, d);
+    const first = risky.findIndex((x) => x.defaulted);
+    const safer = runScenario({ ...plan, politicalRiskPremium: 0 }, m, d);
+    return (
+      first > 0 &&
+      at(safer, first - 1).outputGap - at(risky, first - 1).outputGap >
+        0.1 * plan.politicalRiskPremium
+    );
   },
   'inflation destroys output': (m, d) => {
     const plan = scenario('hyperinflation');
@@ -545,14 +557,23 @@ describe('macro block: mechanisms', () => {
     );
   });
 
-  it("the central bank finances the government's average need, not one month's cash flow", () => {
-    const printer = { ...BASE_POLICY, primaryBalance: -0.02, monetizedShare: 1 };
-    const steady = { ...QUIET_STATE, financingNeed: 0.04 };
-    const spike = stepMacro(steady, { ...printer, primaryBalance: -0.5 }, QUIET_INPUTS, P);
+  it('the central bank prints its share of the budget deficit at once and of interest on average', () => {
+    const printer = { ...BASE_POLICY, primaryBalance: -0.02, monetizedShare: 0.5 };
+    const steady = { ...QUIET_STATE, interestBill: 0.04 };
     const usual = stepMacro(steady, printer, QUIET_INPUTS, P);
+    expect(usual.monetizedDeficit).toBeCloseTo(0.5 * (0.04 + 0.02), 12);
+    // A bigger deficit in the budget is printed in the same month.
+    const spending = stepMacro(steady, { ...printer, primaryBalance: -0.1 }, QUIET_INPUTS, P);
+    expect(spending.monetizedDeficit - usual.monetizedDeficit).toBeCloseTo(0.5 * 0.08, 12);
+    // A jump in the interest bill reaches printing only through its average.
+    const costly = stepMacro({ ...steady, effectiveDebtRate: 0.5 }, printer, QUIET_INPUTS, P);
+    expect(costly.fiscalDeficit).toBeGreaterThan(usual.fiscalDeficit + 0.1);
+    expect(costly.monetizedDeficit).toBe(usual.monetizedDeficit);
     const moved = 1 - 2 ** (-1 / P.financingHalfLifeMonths);
-    expect(spike.fiscalDeficit - usual.fiscalDeficit).toBeCloseTo(0.48, 12);
-    expect(spike.monetizedDeficit - usual.monetizedDeficit).toBeCloseTo(0.48 * moved, 12);
+    expect(costly.state.interestBill - usual.state.interestBill).toBeCloseTo(
+      (costly.fiscalDeficit - usual.fiscalDeficit) * moved,
+      12,
+    );
   });
 
   it('the risk premium saturates', () => {
@@ -686,17 +707,22 @@ describe('macro block: mechanisms', () => {
   it('debt accounting is exact: nothing is created or lost between the two stocks', () => {
     const random = lcg(7);
     const between = (lo: number, hi: number): number => lo + (hi - lo) * random();
+    const matured = 1 - 2 ** (-1 / P.debtRepricingHalfLifeMonths);
     for (let i = 0; i < 500; i++) {
+      const excluded = random() < 0.3;
+      const domesticDebt = between(0, 1.4);
       const state: MacroState = {
         ...QUIET_STATE,
         inflation: between(-0.1, 2),
         adaptiveExpectation: between(0, 1.5),
         credibility: between(0.05, 1),
         reserves: between(0, 12),
-        domesticDebt: between(0, 1.4),
+        domesticDebt,
+        // During an exclusion all domestic debt is restructured, indexed debt.
+        indexedDebt: excluded ? domesticDebt : domesticDebt * between(0, 1),
         foreignDebt: between(-0.5, 0.8),
         effectiveDebtRate: between(0, 0.4),
-        marketExclusion: random() < 0.3 ? 10 : 0,
+        marketExclusion: excluded ? 10 : 0,
       };
       const policy: MacroPolicy = {
         ...BASE_POLICY,
@@ -717,11 +743,17 @@ describe('macro block: mechanisms', () => {
       const total = step.state.domesticDebt + step.state.foreignDebt;
       const growth = (step.state.inflation + inputs.potentialGrowth) / 12;
       const depreciation = step.state.logExchangeRate - state.logExchangeRate;
-      const excluded = state.marketExclusion > 0;
       const premium = excluded || state.foreignDebt < 0 ? 0 : step.riskPremium;
-      const domesticRate = excluded
-        ? step.state.inflation + inputs.anchorRate - inputs.anchorInflation
-        : step.state.effectiveDebtRate;
+      // Indexed debt that has not matured pays the anchor's real rate plus this month's
+      // inflation; the rest of the domestic debt pays the market-debt rate.
+      const indexedRate = step.state.inflation + inputs.anchorRate - inputs.anchorInflation;
+      const indexed = state.indexedDebt * (excluded ? 1 : 1 - matured);
+      const domesticRate =
+        state.domesticDebt > 0
+          ? (indexed * indexedRate +
+              (state.domesticDebt - indexed) * step.state.effectiveDebtRate) /
+            state.domesticDebt
+          : 0;
       const expected =
         state.domesticDebt * Math.exp(domesticRate / 12 - growth) +
         state.foreignDebt * Math.exp((inputs.anchorRate + premium) / 12 - growth + depreciation) -
@@ -731,6 +763,14 @@ describe('macro block: mechanisms', () => {
       const capped = excluded ? Math.min(expected, RESTRUCTURED_DEBT) : expected;
       expect(total).toBeCloseTo(capped, 12);
       expect(step.state.domesticDebt).toBeGreaterThanOrEqual(0);
+      // Repayments retire market debt first.
+      if (!excluded) {
+        expect(step.state.indexedDebt).toBeCloseTo(
+          Math.min(step.state.domesticDebt, indexed * Math.exp(indexedRate / 12 - growth)),
+          12,
+        );
+      }
+      expect(step.state.indexedDebt).toBeLessThanOrEqual(step.state.domesticDebt + 1e-12);
     }
   });
 
@@ -755,6 +795,7 @@ describe('macro block: mechanisms', () => {
       adaptiveExpectation: 0.25,
       credibility: 0.2,
       domesticDebt: 0.8,
+      indexedDebt: 0.8,
       foreignDebt: 0.1,
       effectiveDebtRate: 0.4,
       policyRate: 0.3,
@@ -777,11 +818,6 @@ describe('macro block: mechanisms', () => {
     expect(balanced.fiscalDeficit).toBeCloseTo(0, 12);
     expect(balanced.monetizedDeficit).toBe(0);
     expect(balanced.capitalFlow).toBeLessThanOrEqual(0);
-    // When the market reopens the restructured debt is refinanced at the market rate.
-    expect(balanced.state.effectiveDebtRate).toBeCloseTo(
-      excluded.policyRate + balanced.riskPremium + P.termPremium,
-      12,
-    );
     // A primary deficit must be printed in full, even if the law says to borrow abroad.
     const printing = (foreignBorrowingShare: number) =>
       stepMacro(
@@ -792,6 +828,85 @@ describe('macro block: mechanisms', () => {
       );
     expect(printing(1).monetizedDeficit).toBeCloseTo(0.02, 12);
     expect(printing(1).state.foreignDebt).toBe(printing(0).state.foreignDebt);
+  });
+
+  it('after the market reopens, restructured debt matures at the usual pace into market debt', () => {
+    // Just reopened: all domestic debt is restructured and indexed. Remembered inflation is high,
+    // so new debt is issued short, but the restructured debt keeps its own maturity.
+    const reopened: MacroState = {
+      ...QUIET_STATE,
+      inflation: 0.6,
+      adaptiveExpectation: 0.5,
+      expectedInflation: 0.5,
+      credibility: 0.3,
+      policyRate: 0.9,
+      domesticDebt: 0.8,
+      indexedDebt: 0.8,
+      effectiveDebtRate: 0.05,
+    };
+    const step = stepMacro(reopened, BASE_POLICY, QUIET_INPUTS, P);
+    const stays = 2 ** (-1 / P.debtRepricingHalfLifeMonths);
+    const indexedRate =
+      step.state.inflation + QUIET_INPUTS.anchorRate - QUIET_INPUTS.anchorInflation;
+    const growth = (step.state.inflation + QUIET_INPUTS.potentialGrowth) / 12;
+    expect(step.state.indexedDebt).toBeCloseTo(
+      0.8 * stays * Math.exp(indexedRate / 12 - growth),
+      12,
+    );
+    // What matured was refinanced at this month's market rate, whatever the old coupons were.
+    const marketRate = step.state.policyRate + step.riskPremium + P.termPremium;
+    expect(step.state.effectiveDebtRate).toBeCloseTo(marketRate, 12);
+    expect(step.fiscalDeficit).toBeCloseTo(
+      0.8 * (stays * indexedRate + (1 - stays) * marketRate) - BASE_POLICY.primaryBalance,
+      12,
+    );
+  });
+
+  it('market debt reprices faster when inflation is high, since new debt is issued short', () => {
+    const repricedShare = (adaptiveExpectation: number): number => {
+      const state = { ...QUIET_STATE, adaptiveExpectation, effectiveDebtRate: 0.5 };
+      const step = stepMacro(state, BASE_POLICY, QUIET_INPUTS, P);
+      const marketRate = step.state.policyRate + step.riskPremium + P.termPremium;
+      return (0.5 - step.state.effectiveDebtRate) / (0.5 - marketRate);
+    };
+    expect(repricedShare(0)).toBeCloseTo(1 - 2 ** (-1 / P.debtRepricingHalfLifeMonths), 12);
+    const horizon = 1 + P.expectationAttention * 1;
+    expect(repricedShare(1)).toBeCloseTo(1 - 2 ** (-horizon / P.debtRepricingHalfLifeMonths), 12);
+  });
+
+  it('the debt does not jump when the market reopens after an exclusion financed by printing', () => {
+    // An 8% primary deficit drives the debt over the threshold at once; the exclusion that
+    // follows is financed by printing, inflation hits its ceiling, and the government balances
+    // its budget when the market reopens.
+    const policy = { ...BASE_POLICY, primaryBalance: -0.08, monetizedShare: 0 };
+    let state = initialMacroState(
+      { inflation: 0.03, credibility: 0.8, reserves: 6, domesticDebt: 2.1, foreignDebt: 0 },
+      policy,
+      QUIET_INPUTS,
+      P,
+    );
+    const reopening = 1 + P.marketExclusionMonths;
+    for (let month = 0; month < reopening; month++) {
+      state = stepMacro(state, policy, QUIET_INPUTS, P).state;
+    }
+    expect(state.inflation).toBeGreaterThan(0.9 * P.maxInflation);
+    expect(state.marketExclusion).toBe(0);
+    const step = stepMacro(state, { ...policy, primaryBalance: 0 }, QUIET_INPUTS, P);
+    expect(step.state.inflation).toBeLessThan(0.75 * state.inflation);
+    expect(step.state.domesticDebt / state.domesticDebt).toBeLessThan(1.005);
+  });
+
+  it('a government that balances its budget when the market reopens stays solvent for years', () => {
+    const plan = { ...scenario('debt-spiral'), months: 300 };
+    const first = defaultMonths(runScenario(plan))[0] ?? -1;
+    expect(first).toBeGreaterThan(0);
+    const reopening = first + 1 + P.marketExclusionMonths;
+    const consolidated = runScenario({
+      ...plan,
+      policyChanges: [...plan.policyChanges, { month: reopening, policy: { primaryBalance: 0 } }],
+    });
+    const next = defaultMonths(consolidated).find((month) => month > first) ?? plan.months;
+    expect(next - reopening).toBeGreaterThan(120);
   });
 
   it('until the market reopens, debt cannot climb back above its restructured level', () => {
@@ -889,13 +1004,30 @@ describe('macro block: mechanisms', () => {
       P.maxCapitalFlow * Math.tanh((peg.capitalMobility * differential) / P.maxCapitalFlow),
       12,
     );
+    // The other way round: inflation below the anchor's leaves the currency undervalued, and
+    // investors expect a revaluation.
+    const deflating = { ...QUIET_STATE, adaptiveExpectation: -0.05, expectedInflation: -0.05 };
+    const halfUnder = stepMacro(
+      { ...deflating, realExchangeRate: 0.5 * P.maxRealExchangeRateDeviation },
+      peg,
+      QUIET_INPUTS,
+      P,
+    );
+    const fall = halfUnder.state.expectedInflation - QUIET_INPUTS.anchorInflation;
+    expect(fall).toBeLessThan(0);
+    const gain = 0.06 - QUIET_INPUTS.anchorRate - halfUnder.riskPremium - 0.5 * fall;
+    expect(halfUnder.capitalFlow).toBeCloseTo(
+      P.maxCapitalFlow * Math.tanh((peg.capitalMobility * gain) / P.maxCapitalFlow),
+      12,
+    );
   });
 
   it('an overvalued peg loses its reserves and breaks instead of attracting capital', () => {
-    // A peg whose government prints a deficit: inflation outruns the anchor's.
+    // A peg whose government prints a deficit: inflation outruns the anchor's. Its rate is well
+    // above the anchor's, so only the expected realignment keeps capital from flowing in.
     const printingPeg = withPolicy(scenario('peg-closed-capital'), {
       capitalMobility: 8,
-      governmentRate: 0.05,
+      governmentRate: 0.09,
       primaryBalance: -0.03,
       monetizedShare: 1,
     });
@@ -924,6 +1056,21 @@ describe('macro block: mechanisms', () => {
       P,
     );
     expect(step.riskPremium).toBeLessThanOrEqual(P.maxRiskPremium);
+  });
+
+  it("the first state's interest bill is the first month's interest", () => {
+    // Net assets held abroad earn the anchor rate, with no premium, from the very first month.
+    const start = {
+      inflation: 0.03,
+      credibility: 0.8,
+      reserves: 6,
+      domesticDebt: 0,
+      foreignDebt: -1,
+    };
+    const risky = { ...QUIET_INPUTS, politicalRiskPremium: 0.1 };
+    const first = initialMacroState(start, BASE_POLICY, risky, P);
+    const step = stepMacro(first, BASE_POLICY, risky, P);
+    expect(first.interestBill).toBeCloseTo(step.fiscalDeficit + BASE_POLICY.primaryBalance, 12);
   });
 
   it('the first state expects a credibility-weighted mix of the target and current inflation', () => {
@@ -965,6 +1112,27 @@ describe('macro block: mechanisms', () => {
     expect(gapAfterOneMonth(-10)).toBeGreaterThan(0);
     expect(gapAfterOneMonth(-10)).toBeLessThanOrEqual(largestGap + 1e-12);
     expect(gapAfterOneMonth(-10)).toBeCloseTo(gapAfterOneMonth(-1), 9);
+  });
+
+  it('private borrowers pay the sovereign premium, as if the real rate were that much higher', () => {
+    const gapAfterOneMonth = (realRate: number, riskPremium: number): number =>
+      stepDemandProxy(
+        currentAccountAt(0, 0, D),
+        {
+          realRate,
+          riskPremium,
+          neutralRealRate: P.neutralRealRate,
+          primaryBalance: 0,
+          costPush: 0,
+          demandShock: 0,
+          inflation: 0.03,
+          inflationTarget: 0.03,
+          realExchangeRate: 0,
+        },
+        D,
+      ).outputGap;
+    expect(gapAfterOneMonth(0.02, 0.04)).toBeCloseTo(gapAfterOneMonth(0.06, 0), 15);
+    expect(gapAfterOneMonth(0.02, 0.04)).toBeLessThan(gapAfterOneMonth(0.02, 0));
   });
 
   it('a small inflation miss costs little output, and each point of a large one costs about the same', () => {

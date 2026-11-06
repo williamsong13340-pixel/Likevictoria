@@ -4,9 +4,9 @@
 //    property's own next value, and type-level uses do not count), i.e. data with no effect;
 //  - pass-through: a named function whose whole body forwards its parameters unchanged to
 //    another function or constructor, i.e. an abstraction that adds nothing. Exempt: arrow
-//    functions that call a method reached through `this` (they bind it), wrappers that await a
-//    plain value or discard a promise (they change the type), and members a base class or an
-//    implemented interface requires.
+//    functions that call a method reached through `this` (they bind it), wrappers that await
+//    what may be a plain value or discard what may be a promise (they change the type; an `any`
+//    value counts as a promise), and members a base class or an implemented interface requires.
 // Known gaps: local variables that are written but never read are left to TypeScript's
 // noUnusedLocals; an interface member read only through a computed key (`table[key]`) is
 // reported as unread, while an object constant with any computed read is not checked at all.
@@ -148,11 +148,19 @@ function unwrap(expression: ts.Expression): ts.Expression {
   return e;
 }
 
-/** Whether a value of this expression's type may be a promise (`any` and unions included). */
+/** Whether a value of this expression's type may be a promise (`any`, `unknown` and unions included). */
 function mayBeThenable(checker: ts.TypeChecker, node: ts.Node): boolean {
   const type = checker.getTypeAtLocation(node);
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
   return (type.isUnion() ? type.types : [type]).some((t) => t.getProperty('then') !== undefined);
+}
+
+/** Whether every value of this expression's type is a promise; an `any` value is taken to be one. */
+function isThenable(checker: ts.TypeChecker, node: ts.Node): boolean {
+  const type = checker.getTypeAtLocation(node);
+  if ((type.flags & ts.TypeFlags.Any) !== 0) return true;
+  if ((type.flags & ts.TypeFlags.Unknown) !== 0) return false;
+  return (type.isUnion() ? type.types : [type]).every((t) => t.getProperty('then') !== undefined);
 }
 
 /** The object at the start of a chain like `this.service!.handle` or `this.first().handle`. */
@@ -187,10 +195,11 @@ function forwardedCallee(fn: ts.SignatureDeclaration, checker: ts.TypeChecker): 
   }
   if (expression === undefined) return undefined;
   let call = unwrap(expression);
-  // Awaiting a promise or discarding a plain value changes nothing; awaiting a plain value turns
-  // the result into a promise, and discarding a promise is what a callback must do with one.
+  // Awaiting a promise or discarding a plain value changes nothing; awaiting what may be a plain
+  // value turns the result into a promise, and discarding what may be a promise is what a callback
+  // must do with one.
   for (;;) {
-    if (ts.isAwaitExpression(call) && mayBeThenable(checker, call.expression)) {
+    if (ts.isAwaitExpression(call) && isThenable(checker, call.expression)) {
       call = unwrap(call.expression);
     } else if (ts.isVoidExpression(call) && !mayBeThenable(checker, call.expression)) {
       call = unwrap(call.expression);

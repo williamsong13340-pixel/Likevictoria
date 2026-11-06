@@ -191,3 +191,13 @@ declare function loose(a: number): any;
 export async function viaAny(a: number): Promise<unknown> {
   return await loose(a);
 }
+
+// Awaiting what may be a plain value turns it into a promise.
+declare function eitherWay(a: number): Promise<number> | number;
+export async function viaUnion(a: number): Promise<number> {
+  return await eitherWay(a);
+}
+declare function opaque(a: number): unknown;
+export async function viaUnknown(a: number): Promise<unknown> {
+  return await opaque(a);
+}
